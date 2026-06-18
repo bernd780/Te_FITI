@@ -21,7 +21,7 @@ mkdir -p "${MNT}"
 
 OPTS="rw,iocharset=utf8,vers=${VERS},uid=0,gid=0,file_mode=0660,dir_mode=0770,nofail"
 if bashio::config.has_value 'smb_username'; then
-  # Zugangsdaten direkt uebergeben (keine Datei -> kein DAC-Lese-Problem im Container)
+  # pass credentials directly (no file -> no DAC read problem in container)
   OPTS="${OPTS},username=$(bashio::config 'smb_username'),password=$(bashio::config 'smb_password')"
   if bashio::config.has_value 'smb_domain'; then
     OPTS="${OPTS},domain=$(bashio::config 'smb_domain')"
@@ -30,12 +30,12 @@ else
   OPTS="${OPTS},guest"
 fi
 
-bashio::log.info "Te_FITI - Fleet Integration, Telemetry & Infotainment (Hybrid: Direkt-API + Bookmarklet)"
-bashio::log.info "Mounte //${HOST}/${SHARE} (SMB ${VERS}) -> ${MNT}"
+bashio::log.info "Te_FITI - Fleet Integration, Telemetry & Infotainment (Hybrid: Direct API + Bookmarklet)"
+bashio::log.info "Mounting //${HOST}/${SHARE} (SMB ${VERS}) -> ${MNT}"
 if ! mount -t cifs "//${HOST}/${SHARE}" "${MNT}" -o "${OPTS}"; then
-  bashio::log.warning "Mount fehlgeschlagen - CIFS-Kernel-Meldung (dmesg):"
+  bashio::log.warning "Mount failed - CIFS kernel message (dmesg):"
   dmesg 2>/dev/null | grep -iE 'cifs|smb' | tail -12 || true
-  bashio::log.fatal "CIFS-Mount fehlgeschlagen. Host/Share/Zugangsdaten/SMB-Version pruefen."
+  bashio::log.fatal "CIFS mount failed. Check host/share/credentials/SMB version."
   exit 1
 fi
 
@@ -44,8 +44,8 @@ OUT="${MNT}/${DEC}"
 SCAN="${MNT}/${CLIPS}"
 mkdir -p "${OUT}"
 bashio::log.info "Scan  : ${SCAN}"
-bashio::log.info "Quelle: ${SRC}"
-bashio::log.info "Ziel  : ${OUT}   Keys: ${SRC}/.teslacam_keys.json (neben den Files)"
+bashio::log.info "Source: ${SRC}"
+bashio::log.info "Target: ${OUT}   Keys: ${SRC}/.teslacam_keys.json (next to files)"
 bashio::log.info "auto_decrypt=${AUTO} direct_api=${DIRECT} key_after_decrypt=${KEYMODE} delete_originals=${DELETE}"
 
 FLAGS=""

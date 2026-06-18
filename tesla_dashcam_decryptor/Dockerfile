@@ -11,6 +11,7 @@ COPY run.sh /run.sh
 RUN chmod a+x /run.sh
 
 # keys.json / cache live in the persistent /data directory of the add-on
-ENV DATA_DIR=/data
+ENV DATA_DIR=/data \
+    PYTHONPATH=/app
 
 CMD [ "/run.sh" ]
