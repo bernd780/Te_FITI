@@ -20,12 +20,12 @@ privileged:
   - DAC_READ_SEARCH
 apparmor: false
 options:
-  smb_host: "192.168.198.3"
+  smb_host: "192.168.1.100"
   smb_share: "Tesla_Video"
   enc_subpath: "TeslaCam/EncryptedClips"
   dec_subpath: "decrypted"
   clips_subpath: "TeslaCam"
-  smb_username: "tesla"
+  smb_username: ""
   smb_password: ""
   smb_domain: ""
   smb_version: "3.0"
