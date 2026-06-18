@@ -1,0 +1,480 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Te_FITI</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
+<script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+<style>
+  :root{--bg:#0b0d10;--panel:#15191e;--panel2:#1d232b;--line:#2a323c;--txt:#e7edf3;--muted:#9aa7b4;--accent:#3b82f6;--ok:#34d399;--warn:#fbbf24;--bad:#f87171}
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--txt);font:14px/1.4 "Segoe UI",system-ui,sans-serif}
+  header{display:flex;align-items:center;gap:10px;padding:9px 14px;border-bottom:1px solid var(--line);background:var(--panel)}
+  header h1{font-size:14px;margin:0;font-weight:600}
+  #status{font-size:12px;color:var(--muted)} #status b{color:var(--txt)}
+  .toolbtn{background:var(--accent);border:0;color:#fff;padding:6px 12px;border-radius:7px;cursor:pointer;font-size:12px}
+  main{display:flex;flex-direction:row;height:calc(100% - 50px);min-height:0}
+  /* Sidebar / Clip-Browser */
+  #sidebar{width:270px;min-width:270px;border-right:1px solid var(--line);background:var(--panel);display:flex;flex-direction:column;min-height:0}
+  #filterbar{padding:8px;border-bottom:1px solid var(--line);display:flex;flex-direction:column;gap:6px}
+  #search{width:100%;background:#0e1318;border:1px solid var(--line);color:var(--txt);border-radius:7px;padding:7px 9px;font-size:12px}
+  #filterbar label{font-size:11px;color:var(--muted);display:flex;align-items:center;gap:6px;cursor:pointer}
+  #mapFilterContainer{height:200px;border-bottom:1px solid var(--line);display:none;flex-direction:column}
+  #mapFilter{flex:1}
+  #filterReset{padding:6px;text-align:center;border-bottom:1px solid var(--line);font-size:11px}
+  #filterReset button{background:var(--panel2);border:1px solid var(--line);color:var(--txt);padding:4px 8px;border-radius:4px;cursor:pointer;font-size:11px}
+  #cliplist{flex:1;overflow:auto;padding:4px}
+  .ghead{position:sticky;top:0;background:var(--panel2);padding:6px 9px;font-size:11px;font-weight:600;color:var(--txt);cursor:pointer;border-radius:6px;margin-top:5px;display:flex;justify-content:space-between;align-items:center}
+  .ghead .cnt{color:var(--muted);font-weight:400}
+  .gbody{display:block} .gbody.collapsed{display:none}
+  .cliprow{padding:4px 6px;border-radius:6px;cursor:pointer;font-size:12px;display:flex;align-items:center;gap:8px;color:var(--txt)}
+  .cliprow:hover{background:var(--panel2)} .cliprow.active{background:var(--accent);color:#fff}
+  .cliprow .thumb{width:64px;height:36px;flex:none;object-fit:cover;border-radius:4px;background:#0e1318;border:1px solid var(--line)}
+  .cliprow .thumb.noimg{opacity:.3}
+  .cliprow .cmid{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px}
+  .cliprow .cliptime{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .cliprow .badges{font-size:11px;opacity:.95}
+  /* Content / Player */
+  #content{flex:1;display:flex;flex-direction:column;gap:10px;padding:12px;min-width:0}
+  #meta{font-size:12px;color:var(--muted);min-height:16px}
+  #stage{flex:1;position:relative;display:none;grid-gap:5px;grid-template-columns:1fr 1fr 1fr;grid-template-rows:1fr 1fr;
+    grid-template-areas:"lp front rp" "left back right";min-height:0}
+  #placeholder{flex:1;display:flex;align-items:center;justify-content:center;color:var(--muted);text-align:center}
+  .tile{position:relative;background:#000;border:1px solid var(--line);border-radius:8px;overflow:hidden;display:flex;align-items:center;justify-content:center}
+  .tile video{width:100%;height:100%;object-fit:contain;background:#000}
+  .tile .tag{position:absolute;top:5px;left:5px;background:rgba(0,0,0,.55);padding:1px 6px;border-radius:4px;font-size:10px;color:#cfe}
+  .tile.empty{opacity:.18}
+  .tile .camnote{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#5b6b7b;font-size:20px}
+  .a-front{grid-area:front}.a-back{grid-area:back}.a-left{grid-area:left}.a-right{grid-area:right}.a-lp{grid-area:lp}.a-rp{grid-area:rp}
+  #hud{position:absolute;top:10px;left:50%;transform:translateX(-50%);display:none;align-items:center;gap:16px;
+    background:rgba(20,24,30,.82);backdrop-filter:blur(6px);border:1px solid var(--line);border-radius:14px;padding:8px 16px;z-index:5}
+  #hud .gear{font-weight:700;font-size:20px;width:26px;text-align:center;color:#fff}
+  #hud .spd{display:flex;flex-direction:column;align-items:center;line-height:1}
+  #hud .spd b{font-size:30px} #hud .spd span{font-size:10px;color:var(--muted);letter-spacing:1px}
+  #hud .arrow{font-size:22px;color:#33415540;transition:color .1s} #hud .arrow.on{color:var(--ok)}
+  #hud .ind{width:30px;height:30px;border-radius:7px;display:flex;align-items:center;justify-content:center;background:#0e1318;border:1px solid var(--line);font-size:15px;color:#5b6b7b}
+  #hud .ind.on{color:#fff;border-color:var(--accent)} #hud .brake.on{color:var(--bad);border-color:var(--bad)}
+  #hud .wheel{transition:transform .05s linear;display:inline-block}
+  #stageaction{position:absolute;inset:0;display:none;flex-direction:column;align-items:center;justify-content:center;gap:12px;background:rgba(11,13,16,.6);z-index:7;text-align:center;padding:16px}
+  #stageaction .msg{color:var(--txt);font-size:14px;max-width:480px}
+  #vctrl{display:flex;align-items:center;gap:14px;font-size:12px;color:var(--muted);flex-wrap:wrap;min-height:24px}
+  #vctrl label{display:flex;align-items:center;gap:5px;cursor:pointer}
+  .vbtn{background:var(--panel2);border:1px solid var(--line);color:var(--txt);padding:5px 10px;border-radius:7px;cursor:pointer;font-size:12px}
+  .vbtn:hover{border-color:var(--accent)}
+  #vmsg{color:var(--ok)}
+  #nerd{position:absolute;top:10px;right:10px;display:none;background:rgba(14,19,24,.85);border:1px solid var(--line);border-radius:8px;padding:8px 11px;font:11px/1.55 ui-monospace,Consolas,monospace;color:var(--ok);z-index:6}
+  .tile .dlcam{position:absolute;bottom:5px;right:5px;background:rgba(0,0,0,.6);color:#fff;border-radius:5px;padding:1px 7px;font-size:13px;text-decoration:none;opacity:0;transition:opacity .1s}
+  .tile:hover .dlcam{opacity:1}
+  #bar{display:none;align-items:center;gap:12px;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:8px 12px}
+  #bar button{background:var(--panel2);border:1px solid var(--line);color:var(--txt);width:38px;height:34px;border-radius:7px;cursor:pointer;font-size:15px}
+  #seek{flex:1;accent-color:var(--accent)} #time{font-variant-numeric:tabular-nums;color:var(--muted);min-width:96px;text-align:center}
+  /* Tools-Panel */
+  #tools{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:center;justify-content:center;z-index:20}
+  #tools .box{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px 22px;width:min(640px,92vw);max-height:90vh;overflow:auto;position:relative}
+  #tools h2{margin:0 0 4px;font-size:16px} #tools .sub{color:var(--muted);font-size:12px;margin-bottom:14px}
+  .step{border:1px solid var(--line);background:var(--panel2);border-radius:10px;padding:12px 14px;margin-bottom:10px}
+  .step h3{margin:0 0 6px;font-size:13px} .step p{margin:4px 0;color:var(--muted);font-size:12px}
+  .btn{display:inline-block;background:var(--accent);color:#fff;border:0;padding:8px 14px;border-radius:8px;cursor:pointer;text-decoration:none;font-size:13px}
+  .btn.ghost{background:var(--panel);border:1px solid var(--line);color:var(--txt)}
+  .bm{display:inline-block;background:#0e1318;border:1px dashed var(--accent);color:var(--ok);padding:8px 14px;border-radius:8px;text-decoration:none;font-weight:600;cursor:grab}
+  .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:6px}
+  input[type=text]{flex:1;min-width:240px;background:#0e1318;border:1px solid var(--line);color:var(--txt);border-radius:7px;padding:8px}
+  .pill{font-size:11px;padding:2px 8px;border-radius:20px;border:1px solid var(--line)}
+  .pill.ok{color:var(--ok);border-color:var(--ok)} .pill.bad{color:var(--warn);border-color:var(--warn)}
+  #msg,#lmsg{font-size:12px;margin-top:8px} code{background:#0e1318;border:1px solid var(--line);border-radius:4px;padding:1px 5px}
+  .x{position:absolute;top:12px;right:16px;cursor:pointer;color:var(--muted);font-size:20px}
+</style>
+</head>
+<body>
+<header>
+  <h1>Te_FITI</h1>
+  <span id="status"></span>
+  <button class="toolbtn" id="toolsbtn">🔑 Schlüssel</button>
+  <button class="toolbtn" id="heatmapbtn" title="Heatmap aller GPS-Punkte">🗺️ Heatmap</button>
+</header>
+<main>
+  <aside id="sidebar">
+    <div id="mapFilterContainer">
+      <div id="mapFilter"></div>
+      <div id="filterReset"><button id="filterResetBtn">↻ Filter zurücksetzen</button></div>
+    </div>
+    <div id="filterbar">
+      <input type="text" id="search" placeholder="Filter: Datum/Zeit…">
+      <label><input type="checkbox" id="onlylocked"> nur 🔒 ohne Schlüssel</label>
+    </div>
+    <div id="cliplist"></div>
+  </aside>
+  <section id="content">
+    <div id="meta"></div>
+    <div id="vctrl">
+      <span id="telctrl" style="display:none;align-items:center;gap:14px">
+        <label><input type="checkbox" id="t_hud" checked> HUD</label>
+        <label><input type="checkbox" id="t_nerd"> Infos für Nerds</label>
+        <label><input type="checkbox" id="t_map"> 🗺️ Karte</label>
+      </span>
+      <span id="telnone" style="display:none">— keine Telemetrie in diesem Clip</span>
+      <button class="vbtn" id="dlzip" title="Ganzen Clip (alle Kameras, entschlüsselt) als ZIP">⬇ Clip (ZIP)</button>
+      <button class="vbtn" id="permdec" title="Dauerhaft entschlüsseln & auf dem NAS speichern">💾 dauerhaft speichern</button>
+      <span id="vmsg"></span>
+    </div>
+    <div id="placeholder">⬅ Clip aus der Liste wählen</div>
+    <div id="stage">
+      <div id="hud">
+        <div class="gear" id="h-gear">–</div>
+        <div class="arrow" id="h-l">⮜</div>
+        <div class="spd"><b id="h-spd">0</b><span>KM/H</span></div>
+        <div class="arrow" id="h-r">⮞</div>
+        <div class="ind brake" id="h-brake" title="Bremse">⛔</div>
+        <div class="ind" id="h-ap" title="Autopilot">⊙</div>
+        <div class="ind" id="h-steer" title="Lenkung"><span class="wheel" id="h-wheel">⊕</span></div>
+      </div>
+      <div id="stageaction"></div>
+      <div id="nerd"></div>
+    </div>
+    <div id="bar">
+      <button id="play">▶</button>
+      <input id="seek" type="range" min="0" max="1000" value="0">
+      <span id="time">0:00 / 0:00</span>
+      <select id="rate" title="Tempo"><option>0.5</option><option selected>1</option><option>2</option><option>4</option></select>
+      <button id="full" title="Vollbild">⛶</button>
+    </div>
+    <div id="map" style="display:none;height:240px;border:1px solid var(--line);border-radius:8px;overflow:hidden"></div>
+  </section>
+</main>
+
+<div id="tools">
+  </section>
+</main>
+
+<div id="tools">
+  <div class="box">
+    <span class="x" id="toolsx">✕</span>
+    <h2>Schlüssel &amp; Entschlüsselung</h2>
+    <div class="sub" id="tstat"></div>
+    <div class="step">
+      <h3>A · Direkt-API (automatisch) <span class="pill" id="lpill">…</span></h3>
+      <div id="loginbox">
+        <p><b>1)</b> Diesen Link in einem <b>normalen Browser-Tab</b> öffnen und bei Tesla einloggen:</p>
+        <p><a class="btn" id="loginlink" href="#" target="_blank" rel="noopener">🔗 Tesla-Login öffnen</a> &nbsp;<span style="color:var(--muted);font-size:11px">(oder URL unten kopieren)</span></p>
+        <textarea readonly id="loginurl" rows="3" onclick="this.select()" style="width:100%;background:#0e1318;border:1px solid var(--line);color:var(--ok);border-radius:7px;padding:8px;font-family:monospace;font-size:11px;resize:vertical"></textarea>
+        <p><b>2)</b> Nach dem Login landest du auf <code>dashcam.tesla.com/?code=…</code> — diese Adresse hier einfügen:</p>
+        <div class="row"><input type="text" id="cb" placeholder="https://dashcam.tesla.com/?code=…&state=…"><button class="btn" id="cbgo">Token speichern</button></div>
+      </div>
+      <div class="row"><button class="btn ghost" id="fetchbtn">Alle fehlenden Schlüssel holen</button></div>
+      <div id="lmsg"></div>
+    </div>
+    <div class="step">
+      <h3>C · Vorschaubilder Batch-Generieren</h3>
+      <p>Thumbnails aller <b>verschlüsselten Clips</b> (z.B. RecentClips) einmalig erzeugen, damit sie sofort geladen sind (statt lazy beim Scrollen):</p>
+      <div class="row"><button class="btn" id="thumbsbtn">🖼️ Vorschaubilder erzeugen</button><span id="thumbmsg" style="color:var(--muted);font-size:12px"></span></div>
+    </div>
+    <div class="step">
+      <h3>D · Bookmarklet (Fallback, falls API blockt)</h3>
+      <p>1) <a class="btn" id="dljob" href="api/pending.json" download>pending_items.json</a> laden.
+         2) Auf <a class="btn ghost" href="https://dashcam.tesla.com" target="_blank" rel="noopener">dashcam.tesla.com</a> einloggen, Bookmarklet ausführen → lädt <code>keys.json</code>.
+         3) hier hochladen:</p>
+      <div class="row">
+        <a class="bm" id="bmlink" title="In die Lesezeichenleiste ziehen">⬇ Tesla → FEKs</a>
+        <button class="btn ghost" id="copybm">Snippet kopieren</button>
+        <input type="file" id="keyfile" accept="application/json,.json">
+      </div>
+      <div id="msg"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const $=s=>document.querySelector(s);
+const CAMS=[{k:"front",a:"a-front",l:"Vorne"},{k:"back",a:"a-back",l:"Hinten"},
+  {k:"left_repeater",a:"a-left",l:"Links"},{k:"right_repeater",a:"a-right",l:"Rechts"},
+  {k:"left_pillar",a:"a-lp",l:"Säule L"},{k:"right_pillar",a:"a-rp",l:"Säule R"}];
+const SRC_ORDER=["EncryptedClips","SentryClips","SavedClips","RecentClips"];
+let allClips=[], videos=[], master=null, raf=0, tele=null, activeId=null, collapsed={};
+let lmap=null, lline=null, lmark=null, gpsPts=[];
+let initialSeek=null;
+let gpsFilter=null, heatMap=null, drawnItems=null;
+
+const BM="(async()=>{const pick=document.createElement('input');pick.type='file';pick.accept='application/json,.json';pick.onchange=async()=>{try{const job=JSON.parse(await pick.files[0].text());const items=job.items||job;let raw=sessionStorage.getItem('ROCP_token'),token=raw;try{const p=JSON.parse(raw);token=(typeof p==='string')?p:(p.access_token||p.token||p.accessToken||raw);}catch(e){}if(!token){alert('Kein Tesla-Token - erst auf dashcam.tesla.com einloggen.');return;}const out=[],CH=30;for(let i=0;i<items.length;i+=CH){const r=await fetch('/api/1/decrypt/batch',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+token,'Accept':'application/json'},body:JSON.stringify({items:items.slice(i,i+CH)})});if(!r.ok){alert('API-Fehler '+r.status+' bei Block '+i);return;}const j=await r.json();(j.results||[]).forEach(x=>{if(x.key)out.push({id:x.id,key:x.key});});}const blob=new Blob([JSON.stringify({results:out})],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='keys.json';a.click();alert('Fertig: '+out.length+' Schluessel -> keys.json');}catch(e){alert('Fehler: '+e.message);}};pick.click();})();";
+
+// ---------- Status ----------
+async function refreshStatus(){
+  try{
+    const s=await fetch("api/status").then(r=>r.json());
+    $("#status").innerHTML=`🎞️ <b>${s.clips}</b> Clips · 🔒 <b>${s.encrypted}</b> · 🔑 <b>${s.keyed}</b> · ✅ <b>${s.decrypted}</b> · ⏳ ohne Key <b>${s.need_keys}</b>`+(s.busy?" · läuft…":"");
+    const li=s.login||{};
+    $("#lpill").className="pill "+(li.logged_in?"ok":"bad"); $("#lpill").textContent=li.logged_in?(li.has_refresh?"eingeloggt ✓":"eingeloggt"):"nicht eingeloggt";
+    $("#loginbox").style.display=li.logged_in?"none":"block";
+    let api=s.last_api||{}; if(api.ok===false) $("#lmsg").textContent="Direkt-API: "+api.msg; else if(api.ok&&api.got) $("#lmsg").textContent="Direkt-API: "+api.got+" neue Schlüssel.";
+    $("#tstat").textContent=`Clips ${s.clips} · verschlüsselt ${s.encrypted} · mit Schlüssel ${s.keyed} · ohne Schlüssel ${s.need_keys}`;
+    return s;
+  }catch(e){return null;}
+}
+
+// ---------- Clip-Browser ----------
+async function loadClips(keepActive){
+  allClips=await fetch("api/clips").then(r=>r.json()).catch(()=>[]);
+  buildSidebar();
+  if(keepActive&&activeId){const c=allClips.find(x=>x.id===activeId); if(c) markActive(activeId);}
+}
+function clipState(c){ return c.has_locked&&!c.playable&&!c.needs_prepare ? "locked" : (c.needs_prepare?"key":"ready"); }
+function buildSidebar(){
+  const q=$("#search").value.trim().toLowerCase(), onlyLocked=$("#onlylocked").checked;
+  const groups={};
+  for(const c of allClips){
+    if(onlyLocked && !c.has_locked) continue;
+    if(q && !(c.timestamp.toLowerCase().includes(q) || (c.folder||"").toLowerCase().includes(q))) continue;
+    // GPS-Filter anwenden
+    if(gpsFilter){
+      const hasPtInBounds = c.gps_bounds && gpsFilter.contains([c.gps_bounds.center_lat, c.gps_bounds.center_lon]);
+      if(!hasPtInBounds) continue;
+    }
+    (groups[c.source||"?"] ||= []).push(c);
+  }
+  const el=$("#cliplist"); el.innerHTML="";
+  const srcs=Object.keys(groups).sort((a,b)=>{
+    let ia=SRC_ORDER.indexOf(a), ib=SRC_ORDER.indexOf(b); ia=ia<0?99:ia; ib=ib<0?99:ib; return ia-ib||a.localeCompare(b);});
+  for(const src of srcs){
+    const list=groups[src].sort((a,b)=>b.timestamp.localeCompare(a.timestamp));
+    const head=document.createElement("div"); head.className="ghead";
+    head.innerHTML=`<span>${(collapsed[src]?"▸ ":"▾ ")+src}</span><span class="cnt">${list.length}</span>`;
+    head.onclick=()=>{collapsed[src]=!collapsed[src];buildSidebar();};
+    el.appendChild(head);
+    const body=document.createElement("div"); body.className="gbody"+(collapsed[src]?" collapsed":"");
+    for(const c of list){
+      const r=document.createElement("div"); r.className="cliprow"+(c.id===activeId?" active":""); r.dataset.id=c.id;
+      const badges=(c.has_tel?'<span title="Telemetrie/HUD verfügbar">📊</span>':"")+(c.has_event?'<span title="Event vorhanden – Player startet beim Ereignis">📅</span>':"")+(c.has_locked?' <span title="verschlüsselt – kein Schlüssel">🔒</span>':"");
+      const tm=c.timestamp.replace("_"," ").replace(/-/g,(m,i)=>i>9?":":"-");
+      r.innerHTML=`<img class="thumb" loading="lazy" src="api/thumb?id=${encodeURIComponent(c.id)}" onerror="this.classList.add('noimg');this.removeAttribute('src')"><span class="cmid"><span class="cliptime">${tm}</span><span class="badges">${badges}</span></span>`;
+      r.onclick=()=>open(c);
+      body.appendChild(r);
+    }
+    el.appendChild(body);
+  }
+}
+function markActive(id){ [...document.querySelectorAll(".cliprow")].forEach(r=>r.classList.toggle("active",r.dataset.id===id)); }
+
+// ---------- Öffnen / Wiedergabe ----------
+function clearStage(){
+  cancelAnimationFrame(raf); videos=[]; master=null; tele=null;
+  [...$("#stage").querySelectorAll(".tile")].forEach(t=>t.remove());
+  $("#stageaction").style.display="none"; $("#hud").style.display="none"; $("#nerd").style.display="none";
+  $("#telctrl").style.display="none"; $("#telnone").style.display="none";
+}
+function showAction(html){const a=$("#stageaction");a.innerHTML=html;a.style.display="flex";}
+function setupMaster(){
+  master=videos[0]; if(!master) return;
+  master.onloadedmetadata=()=>{$("#seek").max=Math.floor(master.duration*1000)||1000; if(initialSeek!==null){master.currentTime=initialSeek; slaves(v=>v.currentTime=initialSeek);}};
+  master.onplay=()=>{slaves(v=>v.play().catch(()=>{}));$("#play").textContent="⏸";loop();};
+  master.onpause=()=>{slaves(v=>v.pause());$("#play").textContent="▶";cancelAnimationFrame(raf);};
+}
+async function open(c, _prepared){
+  activeId=c.id; markActive(c.id);
+  $("#placeholder").style.display="none";
+  clearStage(); $("#stage").style.display="grid"; $("#bar").style.display="none";
+  $("#meta").textContent=(c.source?c.source+" · ":"")+c.timestamp.replace("_"," ");
+  let anyPlay=false, anyKey=false, anyLocked=false;
+  for(const cam of CAMS){
+    const cm=c.cameras[cam.k];
+    const t=document.createElement("div"); t.className="tile "+cam.a+(cm?"":" empty");
+    const tag=document.createElement("span"); tag.className="tag"; tag.textContent=cam.l; t.appendChild(tag);
+    if(cm&&cm.url){const v=document.createElement("video");v.src=cm.url;v.muted=true;v.playsInline=true;v.preload="auto";t.appendChild(v);videos.push(v);anyPlay=true;
+      const dl=document.createElement("a");dl.className="dlcam";dl.href=cm.url;dl.download=cm.url.split("/").pop();dl.title="Diese Kamera herunterladen";dl.textContent="⬇";t.appendChild(dl);}
+    else if(cm&&cm.state==="key"){anyKey=true;const o=document.createElement("div");o.className="camnote";o.textContent="🔒";t.appendChild(o);}
+    else if(cm&&cm.state==="locked"){anyLocked=true;const o=document.createElement("div");o.className="camnote";o.textContent="🔒";t.appendChild(o);}
+    $("#stage").appendChild(t);
+  }
+  // Telemetrie laden (falls vorhanden)
+  tele = c.telemetry ? await fetch(c.telemetry).then(r=>r.json()).catch(()=>null) : null;
+  buildGps(); if($("#t_map").checked) showMap(true);
+  // Event-Seek: wenn Event vorhanden, zum Event-Zeitpunkt spulen
+  initialSeek = null;
+  if(c.has_event){
+    try{
+      const ej=await fetch(`api/event?id=${encodeURIComponent(c.id)}`).then(r=>r.json()).catch(()=>null);
+      if(ej&&ej.seek>=0) initialSeek=ej.seek;
+    }catch(e){}
+  }
+  // Verhalten: Schlüssel vorhanden -> sofort (transparent) entschlüsseln & abspielen
+  if(anyKey && !_prepared){ return prepareAndOpen(c.id); }
+  if(anyPlay){ $("#bar").style.display="flex"; setupMaster(); applyHud(); updateTelControls(); return; }
+  // nur verschlüsselt OHNE Schlüssel -> Entschlüsselung anbieten (Schlüssel holen)
+  if(anyLocked){ showAction(`<div class="msg">🔒 Verschlüsselt – noch kein Schlüssel.</div><button class="btn" id="getkey">🔑 Schlüssel holen &amp; abspielen</button><div class="msg" id="gkmsg"></div>`); $("#getkey").onclick=()=>fetchKeyAndOpen(c.id); }
+  else if(anyKey){ showAction(`<div class="msg">⚠️ Entschlüsselung fehlgeschlagen – im 🔑-Panel erneut versuchen.</div>`); }
+}
+async function prepareAndOpen(id){
+  showAction(`<div class="msg">🔓 entschlüssele …</div>`);
+  const r=await fetch("api/prepare",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id})}).then(r=>r.json()).catch(()=>({ok:false,error:"Netzwerkfehler"}));
+  refreshStatus();
+  if(r&&r.clip&&(r.ok||r.clip.playable)){ updateClip(r.clip); open(r.clip, true); }
+  else if(r&&r.errors&&r.errors.length){ showAction(`<div class="msg">Fehler: ${r.errors.join(", ")}</div>`); }
+  else { showAction(`<div class="msg">Fehler: ${(r&&r.error)||"unbekannt"}</div>`); }
+}
+async function fetchKeyAndOpen(id){
+  $("#gkmsg") && ($("#gkmsg").textContent="hole Schlüssel…");
+  await fetch("api/fetch",{method:"POST"});
+  const t=setInterval(async()=>{
+    const s=await fetch("api/status").then(r=>r.json()).catch(()=>null);
+    if(s&&!s.busy){ clearInterval(t); await loadClips(true);
+      const fresh=allClips.find(c=>c.id===id);
+      if(fresh&&(fresh.needs_prepare||fresh.playable)) open(fresh);
+      else $("#gkmsg")&&($("#gkmsg").textContent="Kein Schlüssel erhalten – über 🔑 (Bookmarklet) versuchen.");
+    }
+  },1500);
+}
+function updateClip(fresh){ const i=allClips.findIndex(c=>c.id===fresh.id); if(i>=0){allClips[i]=fresh; buildSidebar();} }
+
+function slaves(fn){videos.forEach(v=>{if(v!==master)fn(v);});}
+function loop(){
+  const t=master.currentTime;
+  slaves(v=>{if(Math.abs(v.currentTime-t)>0.12)v.currentTime=t;});
+  $("#seek").value=Math.floor(t*1000); $("#time").textContent=fmt(t)+" / "+fmt(master.duration||0);
+  if(tele&&tele.frame_count){const i=Math.min(tele.frame_count-1,Math.max(0,Math.round(t*tele.fps)));const fr=tele.frames[i];
+    if($("#t_hud").checked)hud(fr);
+    if($("#t_nerd").checked){nerd(fr);$("#nerd").style.display="block";}else $("#nerd").style.display="none";
+    if($("#t_map").checked)mapMarker(fr);}
+  raf=requestAnimationFrame(loop);
+}
+function hud(f){
+  $("#h-gear").textContent=f.gear??"–"; $("#h-spd").textContent=Math.abs(Math.round(f.speed_kmh||0));
+  $("#h-l").classList.toggle("on",!!f.blink_l); $("#h-r").classList.toggle("on",!!f.blink_r);
+  $("#h-brake").classList.toggle("on",!!f.brake); $("#h-ap").classList.toggle("on",(f.autopilot||0)>0);
+  $("#h-wheel").style.transform=`rotate(${f.steer||0}deg)`; $("#h-steer").classList.toggle("on",Math.abs(f.steer||0)>3);
+}
+function applyHud(){ $("#hud").style.display=(tele&&tele.frame_count&&$("#t_hud").checked)?"flex":"none"; }
+function buildGps(){ gpsPts=(tele&&tele.frames)?tele.frames.filter(f=>f.lat&&f.lon).map(f=>[f.lat,f.lon]):[]; }
+function ensureMap(){
+  if(lmap||!window.L) return lmap;
+  lmap=L.map("map",{attributionControl:false});
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19}).addTo(lmap);
+  return lmap;
+}
+function drawTrack(){
+  if(!ensureMap()) return;
+  if(lline){lmap.removeLayer(lline);lline=null;} if(lmark){lmap.removeLayer(lmark);lmark=null;}
+  if(!gpsPts.length) return;
+  lline=L.polyline(gpsPts,{color:"#3b82f6",weight:4}).addTo(lmap);
+  lmark=L.circleMarker(gpsPts[0],{radius:6,color:"#fff",weight:2,fillColor:"#34d399",fillOpacity:1}).addTo(lmap);
+  lmap.fitBounds(lline.getBounds(),{padding:[20,20]});
+}
+function showMap(on){
+  $("#map").style.display=on?"block":"none";
+  if(!on) return;
+  if(!window.L){ $("#map").innerHTML='<div style="padding:14px;color:var(--muted)">Karte nicht verfügbar (kein Internet für Karten-Bibliothek/Kacheln).</div>'; return; }
+  drawTrack(); setTimeout(()=>lmap&&lmap.invalidateSize(),60);
+}
+function mapMarker(f){ if(lmark&&f&&f.lat&&f.lon) lmark.setLatLng([f.lat,f.lon]); }
+function updateTelControls(){
+  const has=!!(tele&&tele.frame_count);
+  $("#telctrl").style.display=has?"inline-flex":"none";
+  $("#telnone").style.display=has?"none":"inline";
+  $("#t_map").parentElement.style.display=gpsPts.length?"inline-flex":"none";
+  if(!has){ $("#hud").style.display="none"; $("#nerd").style.display="none"; }
+  if(!gpsPts.length){ $("#map").style.display="none"; $("#t_map").checked=false; }
+}
+function nerd(f){
+  const bl=((f.blink_l?"◀":"")+(f.blink_r?"▶":""))||"–";
+  $("#nerd").innerHTML=[
+    "t "+f.t+" s","Tempo "+f.speed_kmh+" km/h","Gang "+(f.gear??"–"),
+    "Lenkung "+(f.steer??"–")+"°","Gas "+(f.accel??"–"),"Bremse "+(f.brake?"AN":"–"),
+    "Blinker "+bl,"Autopilot "+(f.autopilot??0),
+    "GPS "+(f.lat??"–")+", "+(f.lon??"–"),"Kurs "+(f.heading??"–")+"°"
+  ].map(x=>"<div>"+x+"</div>").join("");
+}
+const fmt=s=>{s=Math.max(0,s|0);return (s/60|0)+":"+String(s%60).padStart(2,"0");};
+$("#play").onclick=()=>master&&(master.paused?master.play():master.pause());
+$("#seek").oninput=e=>{const t=e.target.value/1000;if(master){master.currentTime=t;slaves(v=>v.currentTime=t);}};
+$("#rate").onchange=e=>{const r=+e.target.value;if(master){master.playbackRate=r;slaves(v=>v.playbackRate=r);}};
+$("#full").onclick=()=>document.fullscreenElement?document.exitFullscreen():$("#content").requestFullscreen();
+addEventListener("keydown",e=>{if(!master)return;
+  if(e.code==="Space"){e.preventDefault();master.paused?master.play():master.pause();}
+  if(e.code==="ArrowRight"){const t=master.currentTime+5;master.currentTime=t;slaves(v=>v.currentTime=t);}
+  if(e.code==="ArrowLeft"){const t=Math.max(0,master.currentTime-5);master.currentTime=t;slaves(v=>v.currentTime=t);}});
+
+// ---------- GPS-Filter (Heatmap + Rechteck) ----------
+let _gpsMap=null;
+async function initMapFilter(){
+  gpsFilter=null; drawnItems=new L.FeatureGroup();
+  const gpsMap=L.map("mapFilter",{attributionControl:false,zoomControl:false});
+  _gpsMap=gpsMap;
+  L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",{maxZoom:19,attribution:''}).addTo(gpsMap);
+  gpsMap.addLayer(drawnItems);
+  const drawControl=new L.Control.Draw({draw:{polyline:false,circle:false,circlemarker:false,polygon:false,marker:false},edit:{featureGroup:drawnItems}});
+  gpsMap.addControl(drawControl);
+  const s=await fetch("api/all_gps").then(r=>r.json()).catch(()=>({points:[]}));
+  const pts=s.points||[];
+  if(pts.length){
+    heatMap=L.heatLayer(pts.map(p=>[p[0],p[1],0.5]),{radius:25,blur:15,max:1.0}).addTo(gpsMap);
+    const bounds=L.latLngBounds(pts.map(p=>[p[0],p[1]]));
+    gpsMap.fitBounds(bounds,{padding:[10,10]});
+  }
+  gpsMap.on("draw:created draw:edited",()=>{
+    const drawnBounds=drawnItems.getBounds();
+    gpsFilter=drawnBounds.isValid()?drawnBounds:null;
+    buildSidebar();
+  });
+  $("#filterResetBtn").onclick=()=>{gpsFilter=null; drawnItems.clearLayers(); buildSidebar();};
+}
+
+// ---------- Tools (Schlüssel holen) ----------
+async function onKeyFile(e){
+  const f=e.target.files[0]; if(!f) return; $("#msg").textContent="Lade hoch…";
+  let data; try{ data=JSON.parse(await f.text()); }catch(err){ $("#msg").textContent="Keine gültige JSON."; return; }
+  const r=await fetch("api/keys",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(data)}).then(r=>r.json()).catch(()=>({ok:false}));
+  $("#msg").textContent=r.ok?`${r.stored} Schlüssel gespeichert.`:"Fehler beim Speichern.";
+  if(r.ok){ refreshStatus(); loadClips(true); }
+}
+async function boot(){
+  $("#bmlink").href="javascript:"+BM;
+  $("#toolsbtn").onclick=()=>$("#tools").style.display="flex";
+  $("#toolsx").onclick=()=>$("#tools").style.display="none";
+  $("#copybm").onclick=async()=>{try{await navigator.clipboard.writeText(BM);$("#copybm").textContent="kopiert ✓";setTimeout(()=>$("#copybm").textContent="Snippet kopieren",1500);}catch(e){alert("Kopieren fehlgeschlagen.");}};
+  $("#keyfile").onchange=onKeyFile;
+  try{const {url}=await fetch("api/login/url").then(r=>r.json());$("#loginlink").href=url;$("#loginurl").value=url;}catch(e){}
+  $("#cbgo").onclick=async()=>{
+    const r=await fetch("api/login/exchange",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({callback:$("#cb").value.trim()})}).then(r=>r.json());
+    $("#lmsg").textContent=r.ok?("Login OK"+(r.refresh?" – Refresh-Token erhalten.":".")):("Fehler: "+r.error); refreshStatus();
+  };
+  $("#fetchbtn").onclick=async()=>{$("#lmsg").textContent="hole Schlüssel…";await fetch("api/fetch",{method:"POST"});setTimeout(()=>{refreshStatus();loadClips(true);},4000);};
+  $("#thumbsbtn").onclick=async()=>{
+    $("#thumbsbtn").disabled=true; $("#thumbmsg").textContent="generiere…";
+    await fetch("api/thumbs_all",{method:"POST"});
+    const poll=setInterval(async()=>{
+      const s=await fetch("api/status").then(r=>r.json()).catch(()=>null);
+      if(s&&s.thumb_job){
+        const j=s.thumb_job;
+        if(j.running){
+          $("#thumbmsg").textContent=`${j.done}/${j.total}…`;
+        } else {
+          clearInterval(poll);
+          $("#thumbmsg").textContent=j.total>0?`${j.done}/${j.total} fertig ✓`:"keine neuen";
+          $("#thumbsbtn").disabled=false;
+          loadClips(true);
+        }
+      }
+    },800);
+  };
+  $("#t_hud").onchange=applyHud;
+  $("#t_nerd").onchange=()=>{ if(!$("#t_nerd").checked) $("#nerd").style.display="none"; };
+  $("#t_map").onchange=()=>showMap($("#t_map").checked);
+  $("#dlzip").onclick=()=>{ if(!activeId){return;} $("#vmsg").textContent="ZIP wird erstellt…"; const a=document.createElement("a"); a.href="api/zip?id="+encodeURIComponent(activeId); a.click(); setTimeout(()=>$("#vmsg").textContent="",5000); };
+  $("#permdec").onclick=async()=>{ if(!activeId){return;} $("#vmsg").textContent="entschlüssele & speichere…"; const r=await fetch("api/prepare",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:activeId})}).then(r=>r.json()).catch(()=>({ok:false})); $("#vmsg").textContent=(r&&(r.ok||r.clip))?"✓ dauerhaft gespeichert (Ordner decrypted/)":"Fehler"; refreshStatus(); loadClips(true); };
+  $("#search").oninput=buildSidebar;
+  $("#onlylocked").onchange=buildSidebar;
+  $("#heatmapbtn").onclick=()=>{
+    const c=$("#mapFilterContainer");
+    const show=c.style.display==="none"||c.style.display==="";
+    c.style.display=show?"flex":"none";
+    if(show&&_gpsMap) setTimeout(()=>_gpsMap.invalidateSize(),50);
+  };
+  await initMapFilter();
+  await refreshStatus(); await loadClips(false);
+  setInterval(refreshStatus,5000);
+}
+boot();
+</script>
+</body>
+</html>
