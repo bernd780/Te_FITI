@@ -1,7 +1,5 @@
 app/__pycache__
 app/token_store.json
 app/token_store.json.pkce
-app/tesla_auth.py
-app/tesla_api.py
 app/live_test.py
 app/test_ecryptfs.py
