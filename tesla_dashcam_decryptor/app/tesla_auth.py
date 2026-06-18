@@ -1,10 +1,10 @@
 """
-Tesla OAuth (PKCE) fuer den Dashcam-Client - fuer die optionale DIREKT-API.
+Tesla OAuth (PKCE) for the dashcam client – for the optional Direct API.
 
-clientId=dashcam, auth.tesla.com/oauth2/v3, redirect dashcam.tesla.com/callback (fix),
-scope inkl. offline_access -> Refresh-Token (live verifiziert). Token-Cache in /data.
-Der erste Login geht nur per Browser (fixe Redirect-URL); danach refresht das
-Add-on selbst.
+clientId=dashcam, auth.tesla.com/oauth2/v3, redirect dashcam.tesla.com/callback (fixed),
+scope incl. offline_access -> refresh token (live verified). Token cache in /data.
+First login requires a browser (fixed redirect URL); afterwards the add-on refreshes
+the token automatically.
 """
 import json, time, base64, hashlib, secrets, urllib.parse, os, urllib.request
 
@@ -50,14 +50,14 @@ class TeslaAuth:
             p = json.load(open(self.pkce_path))
             self._pkce = (p["v"], p["s"])
         if not self._pkce:
-            raise RuntimeError("erst make_login_url() aufrufen")
+            raise RuntimeError("call make_login_url() first")
         verifier, state = self._pkce
         q = urllib.parse.parse_qs(urllib.parse.urlparse(callback_url).query)
         code = q.get("code", [None])[0]
         if q.get("state", [None])[0] != state:
-            raise RuntimeError("state stimmt nicht (abgelaufen?)")
+            raise RuntimeError("state mismatch (expired?)")
         if not code:
-            raise RuntimeError("kein code in der URL")
+            raise RuntimeError("no code in the URL")
         tok = _post_form(f"{AUTH}/token", {
             "grant_type": "authorization_code", "client_id": CLIENT_ID,
             "code": code, "redirect_uri": REDIRECT, "code_verifier": verifier})
@@ -65,7 +65,7 @@ class TeslaAuth:
         return tok
 
     def get_access_token(self):
-        """Gueltiges Access-Token oder None (wenn kein Login/Refresh moeglich)."""
+        """Returns a valid access token, or None if no login/refresh is possible."""
         tok = self._load()
         if not tok:
             return None

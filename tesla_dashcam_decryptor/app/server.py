@@ -1,30 +1,29 @@
 #!/usr/bin/env python3
 """
-Te_FITI Viewer + Hybrid-Orchestrierung (HA-Ingress, nur stdlib + ffmpeg).
+Te_FITI Viewer + hybrid orchestration (HA ingress, stdlib + ffmpeg only).
 
-Der Viewer ist die Hauptansicht und listet ALLE Clips unter SCAN_ROOT (ganzer
-TeslaCam-Baum). Pro Kamera-Datei:
-  - plain   : nie verschluesselt          -> direkt abspielbar
-  - ready   : verschluesselt + im Cache   -> direkt abspielbar
-  - key     : verschluesselt + Key da     -> On-Demand entschluesseln (prepare)
-  - locked  : verschluesselt + KEIN Key   -> erst Schluessel holen (fetch)
+The viewer lists ALL clips under SCAN_ROOT (full TeslaCam tree). Per camera file:
+  - plain   : never encrypted              -> directly playable
+  - ready   : encrypted + in cache         -> directly playable
+  - key     : encrypted + key available    -> decrypt on demand (prepare)
+  - locked  : encrypted + NO key           -> fetch key first
 
-Thumbnails: vorhandenes Tesla-thumb.png wird genutzt; sonst per ffmpeg ein Frame
-am Ereigniszeitpunkt (event.json) bzw. ~1 s erzeugt und gecacht.
+Thumbnails: uses existing Tesla thumb.png; otherwise generates a frame via
+ffmpeg at the event timestamp (event.json) or ~1 s and caches it.
 
   GET  /                      www/index.html
-  GET  /api/status            Zaehler + Login + busy + last_api
-  GET  /api/clips             ALLE Clips inkl. Kamera-Status + has_tel
-  GET  /api/thumb?id=         Vorschaubild (png/jpg), generiert/gecacht
-  POST /api/prepare           {id} -> Clip on-demand entschluesseln, frischen Clip zurueck
-  POST /api/fetch             Direct-API: fehlende Keys jetzt holen
-  POST /api/decrypt           alle Keyed jetzt entschluesseln (Batch)
-  POST /api/keys              FEKs (Bookmarklet) -> Store
-  GET  /api/pending.json      Items (ohne Key) fuer den Bookmarklet
-  GET  /api/login/url         Direct-API: Login-URL
-  POST /api/login/exchange    Direct-API: Callback-URL -> Token
-  GET  /api/zip?id=           Clip (entschluesselt) als ZIP
-  GET  /media/<scanrel>       Datei aus Cache ODER Plain (Range-faehig)
+  GET  /api/status            counters + login + busy + last_api
+  GET  /api/clips             ALL clips incl. camera states + has_tel
+  GET  /api/thumb?id=         thumbnail (png/jpg), generated/cached
+  POST /api/prepare           {id} -> decrypt clip on demand, return fresh clip
+  POST /api/fetch             Direct API: fetch missing keys now
+  POST /api/decrypt           decrypt all keyed clips now (batch)
+  POST /api/keys              FEKs (bookmarklet) -> store
+  GET  /api/pending.json      items (without key) for the bookmarklet
+  GET  /api/login/url         Direct API: login URL
+  POST /api/login/exchange    Direct API: callback URL -> token
+  GET  /api/zip?id=           clip (decrypted) as ZIP
+  GET  /media/<scanrel>       file from cache OR plain (range-capable)
 """
 import os, json, argparse, re, glob, posixpath, threading, time, base64, zipfile, hashlib, datetime
 from urllib.parse import urlparse, parse_qs
@@ -36,8 +35,8 @@ import tesla_api
 
 WWW = os.path.join(os.path.dirname(os.path.abspath(__file__)), "www")
 DATA_DIR = os.environ.get("DATA_DIR", os.path.dirname(os.path.abspath(__file__)))
-SRC_DIR = OUT_DIR = SCAN_DIR = "."   # SRC=enc-Root, OUT=Cache, SCAN=ganzer Clip-Baum
-ENC_PREFIX = "EncryptedClips"         # SRC_DIR relativ zu SCAN_DIR
+SRC_DIR = OUT_DIR = SCAN_DIR = "."   # SRC=enc root, OUT=cache, SCAN=full clip tree
+ENC_PREFIX = "EncryptedClips"         # SRC_DIR relative to SCAN_DIR
 KEYS_FILE = ""
 INTERVAL = 300
 DELETE = False
@@ -60,7 +59,7 @@ _thumb_job = {"running": False, "done": 0, "total": 0}
 _thumb_guard = threading.Lock()
 
 
-# ---------- Pfad-Helfer (scanrel = Pfad relativ zu SCAN_DIR, posix) ----------
+# ---------- Path helpers (scanrel = path relative to SCAN_DIR, posix) ----------
 def _norm(rel):
     return posixpath.normpath(rel).lstrip("/")
 
@@ -83,7 +82,7 @@ def _telsr(folder, ts):
     return (folder + "/" if folder else "") + f"{ts}-front.telemetry.json"
 
 
-# ---------- Clip-Zustand ----------
+# ---------- Clip state ----------
 def _cam_state(sr, keys):
     if is_enc_sr(sr):
         if os.path.exists(cache_abspath(sr)):
@@ -105,7 +104,7 @@ def _finalize(c):
         try:
             tel = json.load(open(telp, encoding="utf-8"))
             ht = tel.get("frame_count", 0) > 0
-            # GPS-Center (Durchschnitt aller Punkte)
+            # GPS center (average of all points)
             gps_pts = [[f["lat"], f["lon"]] for f in tel.get("frames", []) if f.get("lat") and f.get("lon")]
             if gps_pts:
                 avg_lat = sum(p[0] for p in gps_pts) / len(gps_pts)
@@ -114,11 +113,11 @@ def _finalize(c):
         except Exception:
             ht = False
     c["has_tel"] = ht
-    # Event-Datei vorhanden?
+    # Check for event.json
     ejp = os.path.join(SCAN_DIR, c["folder"], "event.json")
     he = os.path.isfile(ejp)
     c["has_event"] = he
-    # GPS aus event.json als Fallback wenn keine Telemetrie-GPS
+    # GPS from event.json as fallback when no telemetry GPS available
     if not gps_center and he:
         try:
             ev = json.load(open(ejp, encoding="utf-8"))
@@ -207,7 +206,7 @@ def counts(clips):
     }
 
 def _get_event_seek(cid):
-    """Berechnet die Sekunde (seek) des Event-Zeitpunkts relativ zum Clip-Start."""
+    """Calculates the seek offset (s) of the event timestamp relative to the clip start."""
     folder, ts, _ = _clip_cams(cid)
     if not folder or not ts:
         return None
@@ -224,7 +223,7 @@ def _get_event_seek(cid):
         return None
 
 
-# ---------- Entschluesselung ----------
+# ---------- Decryption ----------
 def _clip_lock(cid):
     with _prep_guard:
         l = _prep_locks.get(cid)
@@ -241,7 +240,7 @@ def prepare_clip(cid):
     keys = keystore.load(KEYS_FILE)
     folder, ts, cams = _clip_cams(cid)
     if not cams:
-        return {"ok": False, "error": "clip nicht gefunden"}
+        return {"ok": False, "error": "clip not found"}
     jobs = []
     for cam, sr in cams.items():
         if is_enc_sr(sr):
@@ -286,7 +285,7 @@ def ensure_all():
 
 # ---------- Thumbnails ----------
 def _event_seek(folder, ts):
-    """Offset (s) des Ereigniszeitpunkts aus event.json innerhalb dieses Clips, sonst None."""
+    """Seek offset (s) of the event timestamp from event.json within this clip, or None."""
     ej = os.path.join(SCAN_DIR, folder, "event.json")
     if not os.path.isfile(ej):
         return None
@@ -300,11 +299,11 @@ def _event_seek(folder, ts):
         return None
 
 def make_thumb(cid):
-    """Liefert Pfad zu einem Vorschaubild (png/jpg) oder None (z.B. locked)."""
+    """Returns path to a thumbnail (png/jpg) or None (e.g. locked)."""
     folder, ts, cams = _clip_cams(cid)
     if not cams and "|" in cid:
         folder, ts = cid.rsplit("|", 1)
-    # vorhandenes Tesla-thumb.png (nur plain-Ordner)
+    # use existing Tesla thumb.png (plain folders only)
     if not is_enc_sr(folder):
         tp = os.path.join(SCAN_DIR, folder, "thumb.png")
         if os.path.isfile(tp):
@@ -346,15 +345,14 @@ def _thumb_cache_path(cid):
     return os.path.join(OUT_DIR, ".thumbs", hashlib.sha1(cid.encode()).hexdigest()[:20] + ".jpg")
 
 def gen_all_thumbs():
-    """Batch: Thumbnail+Telemetrie fuer ALLE Clips mit Event/Telemetrie erzeugen (encrypted + plain)."""
+    """Batch: generate thumbnails for ALL clips with event/telemetry data (encrypted + plain)."""
     global _thumb_job
     if _thumb_job.get("running"):
         return
     clips = _scan()
-    # Ziele: verschluesselt OHNE Thumb, ODER plain mit Event/Telemetrie
     targets = []
     for c in clips:
-        if c.get("has_data"):  # Telemetrie ODER Event vorhanden
+        if c.get("has_data"):  # telemetry OR event present
             thumb_path = _thumb_cache_path(c["id"])
             if not os.path.isfile(thumb_path):
                 targets.append(c["id"])
@@ -376,14 +374,14 @@ def gen_all_thumbs():
         _thumb_job["running"] = False
 
 
-# ---------- Direct-API ----------
+# ---------- Direct API ----------
 def api_fetch(items):
     global _last_api
     if not DIRECT_API:
-        return {"ok": False, "msg": "Direkt-API deaktiviert"}
+        return {"ok": False, "msg": "Direct API disabled"}
     token = auth.get_access_token()
     if not token:
-        _last_api = {"ok": False, "msg": "kein Login", "got": 0}
+        _last_api = {"ok": False, "msg": "not logged in", "got": 0}
         return _last_api
     got = 0
     for i in range(0, len(items), 30):
@@ -432,7 +430,7 @@ def scheduler():
         time.sleep(max(30, INTERVAL))
 
 
-# ---------- Media ----------
+# ---------- Media serving ----------
 def resolve_media(sr):
     sr = _norm(sr)
     cp = cache_abspath(sr)
@@ -528,14 +526,14 @@ class H(BaseHTTPRequestHandler):
         if path == "/api/thumb":
             t = make_thumb(self._qs("id"))
             if not t:
-                return self._send(404, {"error": "kein thumb"})
+                return self._send(404, {"error": "no thumb"})
             ct = "image/png" if t.endswith(".png") else "image/jpeg"
             return self._file(t, ct, {"Cache-Control": "max-age=86400"})
         if path == "/api/event":
             cid = self._qs("id")
             seek = _get_event_seek(cid)
             if seek is None:
-                return self._send(404, {"error": "kein event"})
+                return self._send(404, {"error": "no event"})
             return self._send(200, {"seek": seek})
         if path == "/api/all_gps":
             clips = clips_cached()

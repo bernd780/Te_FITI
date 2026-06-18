@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Tesla Dashcam Decryptor - Entschluesselungs-Dienst (Scheduler).
+Tesla Dashcam Decryptor – decryption service (scheduler).
 
-Der Container spricht NICHT mit Tesla. FEKs kommen ueber den Browser-Bookmarklet
-und werden vom Web-Viewer in keys.json (/data) abgelegt. Diese Schleife
-entschluesselt periodisch alle Clips, fuer die ein FEK vorliegt.
+The container does NOT communicate with Tesla. FEKs arrive via the browser
+bookmarklet and are stored by the web viewer in keys.json (/data). This loop
+periodically decrypts all clips for which a FEK is available.
 
   python main.py run --src <ENC_DIR> --out <DEC_DIR> [--delete] [--interval N]
 """
@@ -19,17 +19,17 @@ def cmd_run(args):
         keys = keybridge.load_keys()
         r = pipeline.decrypt_pending(args.src, args.out, keys,
                                      delete_originals=args.delete)
-        print(f"[{time.strftime('%H:%M:%S')}] offen={r['pending']} "
-              f"mit_key={r['had_keys']} entschluesselt={r['decrypted']} "
-              f"fehler={r['errors']}", flush=True)
+        print(f"[{time.strftime('%H:%M:%S')}] pending={r['pending']} "
+              f"with_key={r['had_keys']} decrypted={r['decrypted']} "
+              f"errors={r['errors']}", flush=True)
 
     if args.interval:
-        print(f"Dienst-Modus: alle {args.interval}s", flush=True)
+        print(f"Service mode: every {args.interval}s", flush=True)
         while True:
             try:
                 once()
             except Exception as e:
-                print("[FEHLER]", e, flush=True)
+                print("[ERROR]", e, flush=True)
             time.sleep(args.interval)
     else:
         once()

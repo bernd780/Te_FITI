@@ -1,13 +1,13 @@
-# Home Assistant Add-on: Tesla Dashcam Decryptor
+# Home Assistant Add-on: Te_FITI
 
-Custom-Add-on-Repository für Home Assistant (HAOS/Supervised).
+Custom add-on repository for Home Assistant (HAOS / Supervised).
 
-## Installation in Home Assistant
+## Installation
 
-1. **Einstellungen → Add-ons → Add-on-Store**
-2. Oben rechts **⋮ → Repositories**
-3. Diese Repo-URL eintragen und **Hinzufügen**:
-   `https://github.com/REPLACE-ME/hassio-tesla-dashcam`
-4. Store neu laden → **Tesla Dashcam Decryptor** installieren.
+1. **Settings → Add-ons → Add-on Store**
+2. Top right **⋮ → Repositories**
+3. Add this URL and click **Add**:
+   `https://github.com/bernd780/Te_FITI`
+4. Reload the store → install **Te_FITI**.
 
-Siehe [tesla_dashcam_decryptor/README.md](tesla_dashcam_decryptor/README.md) für Konfiguration und den Bookmarklet-Ablauf.
+See [tesla_dashcam_decryptor/README.md](tesla_dashcam_decryptor/README.md) for configuration and the bookmarklet workflow.

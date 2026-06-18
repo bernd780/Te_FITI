@@ -1,5 +1,5 @@
 """
-eCryptfs-Datei-Entschluesselung fuer Tesla-Dashcam (portiert aus encryptfs.ts).
+eCryptfs file decryption for Tesla dashcam (ported from encryptfs.ts).
 
 Header (8192 B):
   0   plaintextSize  u64 BE
@@ -7,12 +7,12 @@ Header (8192 B):
   16  version/flags  u32 == 0x03000002
   20  page size      u32 BE == 4096
   24  extent count   u16 == 2
-  41  wrapped FEK (16 B, passwortbasiert; nur Test-Pfad)
-  4096 .. : Wrapped-Key-Sektion fuer die API:
+  41  wrapped FEK (16 B, password-based; test path only)
+  4096 .. : wrapped-key section for the API:
        u32 key_id | 65 B EC-public_key | 17 B VIN | u64 timestamp | 44 B wrapped_key
-Daten ab Offset 8192 in 4096-B-Seiten, AES-128-CBC.
-  rootIV   = MD5(FEK)
-  IV(seite)= MD5( rootIV(16) ++ ascii(str(seite)) auf 32 B mit Null aufgefuellt )[:16]
+Data from offset 8192 in 4096-B pages, AES-128-CBC.
+  rootIV    = MD5(FEK)
+  IV(page)  = MD5( rootIV(16) ++ ascii(str(page)) zero-padded to 32 B )[:16]
 """
 import hashlib, base64, struct
 
@@ -27,7 +27,7 @@ try:
         return AES.new(bytes(key), AES.MODE_CBC, bytes(iv)).decrypt(bytes(data))
     def _aes_cbc_encrypt(key, iv, data):
         return AES.new(bytes(key), AES.MODE_CBC, bytes(iv)).encrypt(bytes(data))
-except ImportError:  # Fallback ueber cryptography
+except ImportError:  # fallback via cryptography
     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
     def _aes_cbc_decrypt(key, iv, data):
         d = Cipher(algorithms.AES(bytes(key)), modes.CBC(bytes(iv))).decryptor()
@@ -62,7 +62,7 @@ class EcryptfsFile:
             raise InvalidHeader("unexpected extent count")
 
     def extract_wrapped_key(self) -> dict:
-        """Liefert das Item fuer POST /api/1/decrypt/batch."""
+        """Returns the item for POST /api/1/decrypt/batch."""
         c = PAGE_SIZE
         key_id = struct.unpack_from(">I", self.data, c)[0]; c += 4
         public_key = self.data[c:c + 65]; c += 65
@@ -100,7 +100,7 @@ class EcryptfsFile:
 
 
 def build_test_file(plaintext: bytes, fek: bytes) -> bytes:
-    """Baut eine eCryptfs-Datei (fuer Round-Trip-Selbsttest)."""
+    """Builds an eCryptfs file (for round-trip self-test)."""
     fek = bytes(fek)
     npages = (len(plaintext) + PAGE_SIZE - 1) // PAGE_SIZE
     data = bytearray(HEADER_SIZE + npages * PAGE_SIZE)

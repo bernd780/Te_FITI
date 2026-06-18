@@ -1,12 +1,12 @@
 """
-Scannt den verschluesselten Baum und bereitet die Schluessel-Anfragen auf.
+Scans the encrypted tree and prepares key-fetch requests.
 
-Trennung der Phasen:
-  - braucht KEY     : verschluesselte Datei ohne Eintrag im Key-Store
-  - braucht DECRYPT : hat Key, aber noch keine entschluesselte Ausgabe
+Phase separation:
+  - needs KEY     : encrypted file with no entry in the key store
+  - needs DECRYPT : has a key but no decrypted output yet
 
-Header-Lesen (8 KB) kostet ueber SMB ~140 ms/Datei -> parallel. Auswahl, welche
-Dateien ueberhaupt einen Key/Decrypt brauchen, laeuft per stat (kein Header).
+Reading headers (8 KB) over SMB costs ~140 ms/file -> done in parallel. Selecting
+which files need a key/decrypt at all is done via stat (no header read).
 """
 import os, glob, struct, base64
 from concurrent.futures import ThreadPoolExecutor
@@ -26,7 +26,7 @@ def is_ecryptfs(head: bytes) -> bool:
 
 
 def parse_wrapped_key(head: bytes) -> dict:
-    """Wrapped-Key-Sektion @4096: key_id|65B-EC-PubKey|17B-VIN|u64-ts|44B-wrapped."""
+    """Wrapped-key section @4096: key_id|65B-EC-PubKey|17B-VIN|u64-ts|44B-wrapped."""
     c = 4096
     key_id = struct.unpack_from(">I", head, c)[0]; c += 4
     public_key = head[c:c + 65]; c += 65
@@ -34,7 +34,7 @@ def parse_wrapped_key(head: bytes) -> dict:
     timestamp = struct.unpack_from(">Q", head, c)[0]; c += 8
     wrapped_key = head[c:c + 44]
     if (vin and vin[0] == "\x00") or public_key[0] != 4:
-        raise ValueError("ungueltige Wrapped-Key-Sektion")
+        raise ValueError("invalid wrapped-key section")
     return {"vin": vin, "key_id": key_id, "timestamp": timestamp,
             "wrapped_key": base64.b64encode(wrapped_key).decode(),
             "public_key": base64.b64encode(public_key).decode()}
@@ -90,7 +90,7 @@ def _read_head(path):
 
 
 def scan_items(src_dir: str, keys: dict, limit: int = 0) -> list:
-    """Items (id + Wrapped-Key) fuer Dateien OHNE Key - fuer Direkt-API ODER Bookmarklet."""
+    """Items (id + wrapped key) for files WITHOUT a key – for Direct API or bookmarklet."""
     pend = files_needing_key(src_dir, keys)
     if limit:
         pend = pend[:limit]

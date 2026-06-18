@@ -1,11 +1,11 @@
 """
-Direkt-Client fuer den Tesla-Schluesseldienst (optionaler Hybrid-Weg).
+Direct client for the Tesla key service (optional hybrid path).
 
 POST https://dashcam.tesla.com/api/1/decrypt/batch  (Bearer)
   {items:[{id,vin,key_id,timestamp,wrapped_key,public_key}]} -> {results:[{id,key}]}
 
-dashcam.tesla.com liegt hinter Akamai. Geht der Server-Call durch -> super.
-Blockt er (403/Challenge) -> Aufrufer faellt auf das Browser-Bookmarklet zurueck.
+dashcam.tesla.com is behind Akamai. If the server call goes through -> great.
+If it is blocked (403/challenge) -> caller falls back to the browser bookmarklet.
 """
 import json, base64, urllib.request, urllib.error
 
@@ -18,7 +18,7 @@ class DecryptApiError(Exception):
 
 
 def fetch_keys(items: list, access_token: str) -> dict:
-    """Liefert {id: base64-FEK} fuer erfolgreiche Eintraege. Wirft bei HTTP/Netzfehler."""
+    """Returns {id: base64-FEK} for successful entries. Raises on HTTP/network error."""
     out = {}
     for i in range(0, len(items), CHUNK):
         body = json.dumps({"items": items[i:i + CHUNK]}).encode()
@@ -42,5 +42,5 @@ def fetch_keys(items: list, access_token: str) -> dict:
             raise DecryptApiError(f"network: {e.reason}")
         for res in payload.get("results", []):
             if res.get("key"):
-                out[res["id"]] = res["key"]   # bleibt base64 (wie im Store)
+                out[res["id"]] = res["key"]   # keep as base64 (as stored)
     return out

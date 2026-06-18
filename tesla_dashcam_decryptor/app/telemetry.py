@@ -1,6 +1,6 @@
 """
-SEI-Telemetrie-Extraktor (verifiziert 1:1 gegen index.js).
-Feldnamen exakt aus dem Tesla-Quellcode.
+SEI telemetry extractor (verified 1:1 against index.js).
+Field names taken verbatim from the Tesla source code.
 """
 import struct, hashlib
 
@@ -61,7 +61,7 @@ def _fps(b, n):
 
 
 def extract_telemetry(data: bytes) -> dict:
-    """data = entschluesselte MP4 (bytes). Liefert {fps, frame_count, frames:[...]}"""
+    """data = decrypted MP4 (bytes). Returns {fps, frame_count, frames:[...]}"""
     p = mds = mde = 0
     while p + 8 <= len(data):
         sz = _be32(data, p); t = data[p+4:p+8]

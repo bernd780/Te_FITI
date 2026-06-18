@@ -1,12 +1,12 @@
 """
-Entschluesselt Dateien, fuer die bereits ein FEK im Key-Store vorliegt.
-KEIN Tesla-Kontakt. Keys werden hier NIE geloescht (liegen im keystore).
+Decrypts files for which a FEK is already present in the key store.
+NO Tesla contact. Keys are NEVER deleted here (they live in the keystore).
 
-Pro Datei:
-  1) eCryptfs lokal entschluesseln (AES-128-CBC) + ftyp-Pruefung
-  2) optional FEK ins entschluesselte MP4 einbetten (uuid-Box, Spieler ignorieren sie)
-  3) SEI-Telemetrie -> <name>.telemetry.json
-  4) optional verschluesseltes Original loeschen (Key bleibt im Store!)
+Per file:
+  1) Decrypt eCryptfs locally (AES-128-CBC) + ftyp validation
+  2) Optionally embed FEK into decrypted MP4 (uuid box, ignored by players)
+  3) SEI telemetry -> <name>.telemetry.json
+  4) Optionally delete encrypted original (key remains in store!)
 """
 import os, json, base64, struct, subprocess
 from ecryptfs import EcryptfsFile
@@ -15,7 +15,7 @@ import keybridge
 
 
 def make_thumbnail(src_mp4, out_jpg, seek=1.0, width=240):
-    """Einen Frame aus einer (entschluesselten/plain) mp4 als JPG -> out_jpg (ffmpeg)."""
+    """Extract one frame from a (decrypted/plain) mp4 as JPG -> out_jpg (ffmpeg)."""
     os.makedirs(os.path.dirname(out_jpg) or ".", exist_ok=True)
     tmp = out_jpg + ".part"
     cmd = ["ffmpeg", "-nostdin", "-y", "-ss", f"{max(0.0, seek):.2f}", "-i", src_mp4,
@@ -27,7 +27,7 @@ def make_thumbnail(src_mp4, out_jpg, seek=1.0, width=240):
             return True
         print(f"[thumb] ffmpeg rc={r.returncode} src={src_mp4} err={r.stderr[-300:]!r}", flush=True)
     except FileNotFoundError:
-        print("[thumb] ffmpeg NICHT gefunden (nicht installiert?)", flush=True)
+        print("[thumb] ffmpeg not found (not installed?)", flush=True)
     except Exception as e:
         print(f"[thumb] ffmpeg EXC {e} src={src_mp4}", flush=True)
     try:
@@ -36,7 +36,7 @@ def make_thumbnail(src_mp4, out_jpg, seek=1.0, width=240):
         pass
     return False
 
-# feste UUID (16 B) fuer die eingebettete-FEK-Box
+# fixed UUID (16 B) for the embedded FEK box
 _FEK_UUID = bytes.fromhex("54e5d0c0da5c4f1e9b3a7c0011223344")
 _FEK_MAGIC = b"TDCFEK01"
 
@@ -55,12 +55,12 @@ def _write_tel(mp4: bytes, tel_path: str, source: str):
 
 
 def decrypt_and_cache(enc_path, out_path, fek, embed_key=False, with_telemetry=True):
-    """Entschluesselt EINE Datei atomar -> out_path (+ optional Telemetrie-JSON)."""
+    """Atomically decrypts ONE file -> out_path (+ optional telemetry JSON)."""
     data = open(enc_path, "rb").read()
     plain = EcryptfsFile(data).decrypt(fek)
     is_mp4 = enc_path.lower().endswith(".mp4")
     if is_mp4 and plain[4:8] != b"ftyp":
-        raise ValueError("falscher FEK (kein ftyp)")
+        raise ValueError("wrong FEK (no ftyp)")
     if is_mp4 and embed_key:
         plain = embed_fek(plain, fek)
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
@@ -78,7 +78,7 @@ def decrypt_and_cache(enc_path, out_path, fek, embed_key=False, with_telemetry=T
 
 
 def telemetry_for_plain(src_path, tel_path):
-    """Telemetrie aus einer UNverschluesselten mp4 ziehen (kein Decrypt, nur lesen)."""
+    """Extract telemetry from an unencrypted mp4 (no decryption, read-only)."""
     if os.path.exists(tel_path):
         return
     data = open(src_path, "rb").read()
@@ -98,10 +98,10 @@ def decrypt_pending(src_dir, out_dir, keys, delete_originals=False,
             fek = base64.b64decode(keys[cid])
             plain = EcryptfsFile(data).decrypt(fek)
         except Exception as e:
-            log(f"  [fehler] {cid}: {e}"); errs += 1; continue
+            log(f"  [error] {cid}: {e}"); errs += 1; continue
         is_mp4 = cid.lower().endswith(".mp4")
         if is_mp4 and plain[4:8] != b"ftyp":
-            log(f"  [fehler] {cid}: falscher FEK (kein ftyp)"); errs += 1; continue
+            log(f"  [error] {cid}: wrong FEK (no ftyp)"); errs += 1; continue
         if is_mp4 and embed_key:
             plain = embed_fek(plain, fek)
         tmp = out_path + ".part"
@@ -116,10 +116,10 @@ def decrypt_pending(src_dir, out_dir, keys, delete_originals=False,
                 json.dump(tel, open(os.path.splitext(out_path)[0] + ".telemetry.json",
                                     "w", encoding="utf-8"), separators=(",", ":"))
             except Exception as e:
-                log(f"  [warn] Telemetrie {cid}: {e}")
-        if delete_originals:   # Key bleibt im Store erhalten
+                log(f"  [warn] telemetry {cid}: {e}")
+        if delete_originals:   # key remains in the store
             try:
                 os.remove(src_path)
             except OSError as e:
-                log(f"  [warn] loeschen {cid}: {e}")
+                log(f"  [warn] delete {cid}: {e}")
     return {"need_decrypt": len(cand), "decrypted": done, "errors": errs}

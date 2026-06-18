@@ -1,10 +1,10 @@
 """
-Persistenter FEK-Speicher - liegt als versteckte JSON NEBEN den Video-Files
-(im verschluesselten Baum auf dem NAS). Schluessel werden hier dauerhaft
-gesammelt; einmal geholt = nie wieder bei Tesla fragen. Wird NIE geloescht.
+Persistent FEK store – stored as a hidden JSON file NEXT TO the video files
+(in the encrypted tree on the NAS). Keys are accumulated here permanently;
+once fetched = never ask Tesla again. NEVER deleted.
 
 Format:  { "<clip_id>": "<base64-FEK>", ... }
-clip_id = Pfad der Datei relativ zum Quell-Stamm (z.B.
+clip_id = path of the file relative to the source root (e.g.
           "TeslaCam/EncryptedClips/RecentClips/2026-..-front.mp4").
 """
 import os, json, threading
@@ -37,8 +37,8 @@ def save(path: str, keys: dict):
 
 
 def merge(path: str, new_keys: dict) -> int:
-    """Fuegt neue FEKs hinzu (vorhandene werden NICHT ueberschrieben/geloescht).
-    Liefert Anzahl wirklich neuer Schluessel."""
+    """Add new FEKs (existing ones are NOT overwritten/deleted).
+    Returns the number of genuinely new keys."""
     with _lock:
         keys = load(path)
         n = 0
