@@ -269,6 +269,10 @@ def _get_event_data(cid):
             result["reason"] = ev["reason"]
         if ev.get("city"):
             result["city"] = ev["city"]
+        if ev.get("street"):
+            result["street"] = ev["street"]
+        if ev.get("camera") is not None:
+            result["camera"] = ev["camera"]
         return result if result else None
     except Exception:
         return None

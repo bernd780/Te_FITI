@@ -119,7 +119,7 @@
     <div id="vctrl">
       <span id="telctrl" style="display:none;align-items:center;gap:14px">
         <label><input type="checkbox" id="t_hud" checked> HUD</label>
-        <label><input type="checkbox" id="t_nerd"> Debug info</label>
+        <label><input type="checkbox" id="t_nerd"> Mehr für Nerds</label>
         <label><input type="checkbox" id="t_map"> 🗺️ Map</label>
       </span>
       <span id="telnone" style="display:none">— no telemetry in this clip</span>
@@ -201,7 +201,7 @@ const CAMS=[{k:"front",a:"a-front",l:"Front"},{k:"back",a:"a-back",l:"Rear"},
   {k:"left_repeater",a:"a-left",l:"Left"},{k:"right_repeater",a:"a-right",l:"Right"},
   {k:"left_pillar",a:"a-lp",l:"Pillar L"},{k:"right_pillar",a:"a-rp",l:"Pillar R"}];
 const SRC_ORDER=["EncryptedClips","SentryClips","SavedClips","RecentClips"];
-let allClips=[], videos=[], master=null, raf=0, tele=null, activeId=null, collapsed={};
+let allClips=[], videos=[], master=null, raf=0, tele=null, activeId=null, collapsed={}, curEvent=null;
 let lmap=null, lline=null, lmark=null, gpsPts=[];
 let initialSeek=null;
 let gpsFilter=null, _gpsMarkers=[];
@@ -301,11 +301,11 @@ async function open(c, _prepared){
   buildGps();
   // Event-Daten laden (Seek, GPS-Fallback, Reason)
   initialSeek = null;
-  let eventData = null;
+  curEvent = null;
   if(c.has_event){
-    try{ eventData=await fetch(`api/event?id=${encodeURIComponent(c.id)}`).then(r=>r.json()).catch(()=>null); }catch(e){}
-    if(eventData&&eventData.seek>=0) initialSeek=eventData.seek;
-    if(!gpsPts.length && eventData&&eventData.lat&&eventData.lon) gpsPts=[[eventData.lat,eventData.lon]];
+    try{ curEvent=await fetch(`api/event?id=${encodeURIComponent(c.id)}`).then(r=>r.json()).catch(()=>null); }catch(e){}
+    if(curEvent&&curEvent.seek>=0) initialSeek=curEvent.seek;
+    if(!gpsPts.length && curEvent&&curEvent.lat&&curEvent.lon) gpsPts=[[curEvent.lat,curEvent.lon]];
   }
   if($("#t_map").checked) showMap(true);
   // key available -> decrypt transparently and play immediately
@@ -393,23 +393,44 @@ function mapMarker(f){ if(lmark&&f&&f.lat&&f.lon) lmark.setLatLng([f.lat,f.lon])
 function updateTelControls(){
   const hasTel=!!(tele&&tele.frame_count);
   const hasGps=gpsPts.length>0;
-  const hasAny=hasTel||hasGps;
+  const hasEvent=!!curEvent;
+  const hasNerd=hasTel||hasEvent;
+  const hasAny=hasTel||hasGps||hasEvent;
   $("#telctrl").style.display=hasAny?"inline-flex":"none";
   $("#telnone").style.display=hasAny?"none":"inline";
   $("#t_hud").parentElement.style.display=hasTel?"inline-flex":"none";
-  $("#t_nerd").parentElement.style.display=hasTel?"inline-flex":"none";
+  $("#t_nerd").parentElement.style.display=hasNerd?"inline-flex":"none";
   $("#t_map").parentElement.style.display=hasGps?"inline-flex":"none";
-  if(!hasTel){ $("#hud").style.display="none"; $("#nerd").style.display="none"; }
+  if(!hasTel){ $("#hud").style.display="none"; }
+  if(!hasNerd || !$("#t_nerd").checked){ $("#nerd").style.display="none"; }
+  if(hasEvent && !hasTel && $("#t_nerd").checked){ nerdEvent(); $("#nerd").style.display="block"; }
   if(!hasGps){ $("#map").style.display="none"; $("#t_map").checked=false; }
 }
+const CAM_LABELS=["Front","Rear","Left","Right","Pillar L","Pillar R"];
+const REASON_LABELS={"sentry_aware_object_detection":"Object detected (Sentry)","sentry_aware_accel":"Acceleration (Sentry)","user_interaction_dashcam_icon_tapped":"Manual save","user_interaction_honk":"Honk","sentry_aware_intrusion":"Intrusion (Sentry)"};
 function nerd(f){
   const bl=((f.blink_l?"◀":"")+(f.blink_r?"▶":""))||"–";
-  $("#nerd").innerHTML=[
+  let lines=[
     "t "+f.t+" s","Tempo "+f.speed_kmh+" km/h","Gang "+(f.gear??"–"),
     "Lenkung "+(f.steer??"–")+"°","Gas "+(f.accel??"–"),"Bremse "+(f.brake?"AN":"–"),
     "Blinker "+bl,"Autopilot "+(f.autopilot??0),
     "GPS "+(f.lat??"–")+", "+(f.lon??"–"),"Kurs "+(f.heading??"–")+"°"
-  ].map(x=>"<div>"+x+"</div>").join("");
+  ];
+  if(curEvent) lines.push("","— Event —",...eventNerdLines());
+  $("#nerd").innerHTML=lines.map(x=>"<div>"+x+"</div>").join("");
+}
+function eventNerdLines(){
+  if(!curEvent) return [];
+  const e=curEvent, lines=[];
+  if(e.reason) lines.push("Grund: "+(REASON_LABELS[e.reason]||e.reason));
+  if(e.city||e.street) lines.push("Ort: "+[e.street,e.city].filter(Boolean).join(", "));
+  if(e.lat&&e.lon) lines.push("GPS: "+e.lat+", "+e.lon);
+  if(e.camera!=null) lines.push("Kamera: "+(CAM_LABELS[+e.camera]||e.camera));
+  if(e.seek!=null) lines.push("Event @ "+Math.round(e.seek)+" s");
+  return lines;
+}
+function nerdEvent(){
+  $("#nerd").innerHTML=eventNerdLines().map(x=>"<div>"+x+"</div>").join("");
 }
 const fmt=s=>{s=Math.max(0,s|0);return (s/60|0)+":"+String(s%60).padStart(2,"0");};
 $("#play").onclick=()=>master&&(master.paused?master.play():master.pause());
@@ -533,7 +554,7 @@ async function boot(){
     },800);
   };
   $("#t_hud").onchange=applyHud;
-  $("#t_nerd").onchange=()=>{ if(!$("#t_nerd").checked) $("#nerd").style.display="none"; };
+  $("#t_nerd").onchange=()=>{ if(!$("#t_nerd").checked){ $("#nerd").style.display="none"; } else if(!(tele&&tele.frame_count)&&curEvent){ nerdEvent(); $("#nerd").style.display="block"; } };
   $("#t_map").onchange=()=>showMap($("#t_map").checked);
   $("#dlzip").onclick=()=>{ if(!activeId){return;} $("#vmsg").textContent="Creating ZIP…"; const a=document.createElement("a"); a.href="api/zip?id="+encodeURIComponent(activeId); a.click(); setTimeout(()=>$("#vmsg").textContent="",5000); };
   $("#permdec").onclick=async()=>{ if(!activeId){return;} $("#vmsg").textContent="Decrypting & saving…"; const r=await fetch("api/prepare",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:activeId})}).then(r=>r.json()).catch(()=>({ok:false})); $("#vmsg").textContent=(r&&(r.ok||r.clip))?"✓ permanently saved (folder decrypted/)":"Error"; refreshStatus(); loadClips(true); };
