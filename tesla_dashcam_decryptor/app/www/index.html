@@ -27,9 +27,6 @@
   #mapFilterBar button.active{border-color:var(--accent);color:var(--accent)}
   #mapFilterBar .hint{flex:1}
   #cliplist{flex:1;overflow:auto;padding:4px}
-  .ghead{position:sticky;top:0;background:var(--panel2);padding:6px 9px;font-size:11px;font-weight:600;color:var(--txt);cursor:pointer;border-radius:6px;margin-top:5px;display:flex;justify-content:space-between;align-items:center}
-  .ghead .cnt{color:var(--muted);font-weight:400}
-  .gbody{display:block} .gbody.collapsed{display:none}
   .cliprow{padding:4px 6px;border-radius:6px;cursor:pointer;font-size:12px;display:flex;align-items:center;gap:8px;color:var(--txt)}
   .cliprow:hover{background:var(--panel2)} .cliprow.active{background:var(--accent);color:#fff}
   .cliprow .thumb{width:64px;height:36px;flex:none;object-fit:cover;border-radius:4px;background:#0e1318;border:1px solid var(--line)}
@@ -202,8 +199,7 @@ const $=s=>document.querySelector(s);
 const CAMS=[{k:"front",a:"a-front",l:"Front"},{k:"back",a:"a-back",l:"Rear"},
   {k:"left_repeater",a:"a-left",l:"Left"},{k:"right_repeater",a:"a-right",l:"Right"},
   {k:"left_pillar",a:"a-lp",l:"Pillar L"},{k:"right_pillar",a:"a-rp",l:"Pillar R"}];
-const SRC_ORDER=["EncryptedClips","SentryClips","SavedClips","RecentClips"];
-let allClips=[], videos=[], master=null, raf=0, tele=null, activeId=null, collapsed={}, curEvent=null;
+let allClips=[], videos=[], master=null, raf=0, tele=null, activeId=null, curEvent=null;
 let lmap=null, lline=null, lmark=null, gpsPts=[];
 let initialSeek=null;
 let gpsFilter=null, _gpsMarkers=[];
@@ -234,37 +230,26 @@ async function loadClips(keepActive){
 function clipState(c){ return c.has_locked&&!c.playable&&!c.needs_prepare ? "locked" : (c.needs_prepare?"key":"ready"); }
 function buildSidebar(){
   const q=$("#search").value.trim().toLowerCase(), fDrive=$("#filterDrive").checked, fEvent=$("#filterEvent").checked;
-  const groups={};
+  const filtered=[];
   for(const c of allClips){
     if(fDrive && !c.has_tel) continue;
     if(fEvent && !c.has_event) continue;
     if(q && !(c.timestamp.toLowerCase().includes(q) || (c.folder||"").toLowerCase().includes(q))) continue;
-    // GPS-Filter anwenden
     if(gpsFilter){
       const hasPtInBounds = c.gps_bounds && gpsFilter.contains([c.gps_bounds.center_lat, c.gps_bounds.center_lon]);
       if(!hasPtInBounds) continue;
     }
-    (groups[c.source||"?"] ||= []).push(c);
+    filtered.push(c);
   }
+  filtered.sort((a,b)=>b.timestamp.localeCompare(a.timestamp));
   const el=$("#cliplist"); el.innerHTML="";
-  const srcs=Object.keys(groups).sort((a,b)=>{
-    let ia=SRC_ORDER.indexOf(a), ib=SRC_ORDER.indexOf(b); ia=ia<0?99:ia; ib=ib<0?99:ib; return ia-ib||a.localeCompare(b);});
-  for(const src of srcs){
-    const list=groups[src].sort((a,b)=>b.timestamp.localeCompare(a.timestamp));
-    const head=document.createElement("div"); head.className="ghead";
-    head.innerHTML=`<span>${(collapsed[src]?"▸ ":"▾ ")+src}</span><span class="cnt">${list.length}</span>`;
-    head.onclick=()=>{collapsed[src]=!collapsed[src];buildSidebar();};
-    el.appendChild(head);
-    const body=document.createElement("div"); body.className="gbody"+(collapsed[src]?" collapsed":"");
-    for(const c of list){
-      const r=document.createElement("div"); r.className="cliprow"+(c.id===activeId?" active":""); r.dataset.id=c.id;
-      const badges=(c.has_tel?'<span title="Telemetry/HUD available">📊</span>':"")+(c.has_event?'<span title="Event present – player jumps to event">📅</span>':"")+(c.has_locked?' <span title="encrypted – no key">🔒</span>':"");
-      const tm=c.timestamp.replace("_"," ").replace(/-/g,(m,i)=>i>9?":":"-");
-      r.innerHTML=`<img class="thumb" loading="lazy" src="api/thumb?id=${encodeURIComponent(c.id)}" onerror="this.classList.add('noimg');this.removeAttribute('src')"><span class="cmid"><span class="cliptime">${tm}</span><span class="badges">${badges}</span></span>`;
-      r.onclick=()=>open(c);
-      body.appendChild(r);
-    }
-    el.appendChild(body);
+  for(const c of filtered){
+    const r=document.createElement("div"); r.className="cliprow"+(c.id===activeId?" active":""); r.dataset.id=c.id;
+    const badges=(c.has_tel?'<span title="Telemetry/HUD available">📊</span>':"")+(c.has_event?'<span title="Event present – player jumps to event">📅</span>':"")+(c.has_locked?' <span title="encrypted – no key">🔒</span>':"");
+    const tm=c.timestamp.replace("_"," ").replace(/-/g,(m,i)=>i>9?":":"-");
+    r.innerHTML=`<img class="thumb" loading="lazy" src="api/thumb?id=${encodeURIComponent(c.id)}" onerror="this.classList.add('noimg');this.removeAttribute('src')"><span class="cmid"><span class="cliptime">${tm}</span><span class="badges">${badges}</span></span>`;
+    r.onclick=()=>open(c);
+    el.appendChild(r);
   }
 }
 function markActive(id){ [...document.querySelectorAll(".cliprow")].forEach(r=>r.classList.toggle("active",r.dataset.id===id)); }
