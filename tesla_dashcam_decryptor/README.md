@@ -25,9 +25,11 @@ pure local viewer without any Tesla account interaction at all.
 - **GPS map** — live track from telemetry or single-point from event.json
 - **"Nerd info" panel** — raw telemetry values + event metadata
   (trigger reason, location, camera)
-- **Clip browser** — grouped by source folder, searchable, filterable by
+- **Clip browser** — flat chronological list, searchable, filterable by
   driving telemetry / event, and by GPS area (marker map with rectangle
-  selection)
+  selection). If your `clips_subpath` contains vehicle folders (e.g.
+  `Tesla1`, `Tesla2`), clips are automatically grouped per vehicle.
+- **Per-camera fullscreen** — each video tile has a fullscreen button
 - **Thumbnail grid** — auto-generated or from Tesla's thumb.png
 - **Per-camera download** and full-clip ZIP export
 - **Batch operations** — bulk key fetch, bulk decrypt, bulk telemetry
@@ -51,6 +53,10 @@ Te_FITI supports two ways to obtain the keys:
 Once fetched, FEKs are stored persistently next to the encrypted files on
 your NAS (`.teslacam_keys.json`). From that point on, decryption is **fully
 local and offline** — no further contact with Tesla is needed.
+
+In the clip browser, encrypted clips are marked with a lock icon:
+🔒 (green) = key available, ready to decrypt;
+🔒 (grey) = no key yet, needs to be fetched first.
 
 ## Installation
 
