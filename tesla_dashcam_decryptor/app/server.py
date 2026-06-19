@@ -574,7 +574,8 @@ class H(BaseHTTPRequestHandler):
     def do_GET(self):
         path = self.path.split("?")[0]
         if path in ("/", "/index.html"):
-            return self._file(os.path.join(WWW, "index.html"), "text/html")
+            return self._file(os.path.join(WWW, "index.html"), "text/html",
+                              {"Cache-Control": "no-cache, no-store, must-revalidate"})
         if path.startswith("/static/"):
             fp = os.path.join(WWW, os.path.basename(path))
             if os.path.isfile(fp):
