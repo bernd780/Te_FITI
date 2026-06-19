@@ -71,9 +71,9 @@ In the clip browser, encrypted clips are marked with a lock icon:
 |---|---|
 | `smb_host` | IP address of your NAS |
 | `smb_share` | SMB share name (e.g. `Tesla_Video`) |
-| `enc_subpath` | Sub-path to encrypted clips (e.g. `TeslaCam/EncryptedClips`) |
-| `dec_subpath` | Output folder for decrypted clips (e.g. `decrypted`) |
-| `clips_subpath` | Root of the full TeslaCam tree for the viewer (e.g. `TeslaCam`) |
+| `clips_subpath` | Root of the TeslaCam tree (e.g. `TeslaCam`). Encrypted files are auto-detected by their eCryptfs header — no need to separate them into a specific folder. |
+| `enc_subpath` | *(optional)* Legacy: explicit path to encrypted clips. Leave empty for auto-detection. |
+| `dec_subpath` | *(optional)* Output folder for decrypted clips (default: `decrypted`) |
 | `smb_username` | SMB username |
 | `smb_password` | SMB password |
 | `smb_version` | SMB protocol version (default: `3.0`) |

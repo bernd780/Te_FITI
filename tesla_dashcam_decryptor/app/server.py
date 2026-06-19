@@ -33,6 +33,7 @@ from urllib.parse import urlparse, parse_qs
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import keybridge, pipeline, keystore
+from keybridge import is_ecryptfs
 from tesla_auth import TeslaAuth
 import tesla_api
 
@@ -110,12 +111,29 @@ def _telsr(folder, ts):
     return (folder + "/" if folder else "") + f"{ts}-front.telemetry.json"
 
 
+# ---------- Encrypted file detection (cached) ----------
+_enc_files = {}
+
+def _is_encrypted(abspath, sr):
+    """Check if a file is eCryptfs-encrypted, with in-memory cache."""
+    if sr in _enc_files:
+        return _enc_files[sr]
+    try:
+        with open(abspath, "rb") as f:
+            head = f.read(28)
+        result = is_ecryptfs(head)
+    except Exception:
+        result = False
+    _enc_files[sr] = result
+    return result
+
 # ---------- Clip state ----------
 def _cam_state(sr, keys):
-    if is_enc_sr(sr):
+    abspath = src_abspath(sr)
+    if _is_encrypted(abspath, sr):
         if os.path.exists(cache_abspath(sr)):
             return {"state": "ready", "url": "media/" + sr}
-        if enc_id(sr) in keys:
+        if sr in keys or enc_id(sr) in keys:
             return {"state": "key", "url": None}
         return {"state": "locked", "url": None}
     return {"state": "plain", "url": "media/" + sr}
@@ -293,8 +311,19 @@ def _clip_lock(cid):
             _prep_locks[cid] = l
         return l
 
+def _key_for(sr, keys):
+    """Find the FEK for an encrypted file (try full sr, then enc_id)."""
+    if sr in keys:
+        return base64.b64decode(keys[sr])
+    eid = enc_id(sr)
+    if eid in keys:
+        return base64.b64decode(keys[eid])
+    return None
+
 def _decrypt_cam(sr, keys):
-    fek = base64.b64decode(keys[enc_id(sr)])
+    fek = _key_for(sr, keys)
+    if not fek:
+        raise KeyError(f"no key for {sr}")
     pipeline.decrypt_and_cache(src_abspath(sr), cache_abspath(sr), fek, embed_key=EMBED_KEY)
 
 def prepare_clip(cid):
@@ -304,8 +333,8 @@ def prepare_clip(cid):
         return {"ok": False, "error": "clip not found"}
     jobs = []
     for cam, sr in cams.items():
-        if is_enc_sr(sr):
-            if not os.path.exists(cache_abspath(sr)) and enc_id(sr) in keys:
+        if _is_encrypted(src_abspath(sr), sr):
+            if not os.path.exists(cache_abspath(sr)) and _key_for(sr, keys):
                 jobs.append(("dec", sr))
         elif cam == "front":
             jobs.append(("tel", sr))

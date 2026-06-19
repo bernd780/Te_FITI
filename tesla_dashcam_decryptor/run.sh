@@ -3,10 +3,12 @@ set -e
 
 HOST=$(bashio::config 'smb_host')
 SHARE=$(bashio::config 'smb_share')
-ENC=$(bashio::config 'enc_subpath')
-DEC=$(bashio::config 'dec_subpath')
 CLIPS=$(bashio::config 'clips_subpath')
 if ! bashio::config.has_value 'clips_subpath'; then CLIPS="TeslaCam"; fi
+ENC=""
+if bashio::config.has_value 'enc_subpath'; then ENC=$(bashio::config 'enc_subpath'); fi
+DEC="decrypted"
+if bashio::config.has_value 'dec_subpath'; then DEC=$(bashio::config 'dec_subpath'); fi
 INTERVAL=$(bashio::config 'interval_seconds')
 DELETE=$(bashio::config 'delete_originals')
 AUTO=$(bashio::config 'auto_decrypt')
@@ -39,13 +41,17 @@ if ! mount -t cifs "//${HOST}/${SHARE}" "${MNT}" -o "${OPTS}"; then
   exit 1
 fi
 
-SRC="${MNT}/${ENC}"
-OUT="${MNT}/${DEC}"
 SCAN="${MNT}/${CLIPS}"
+if [ -n "${ENC}" ]; then
+  SRC="${MNT}/${ENC}"
+else
+  SRC="${SCAN}"
+fi
+OUT="${MNT}/${DEC}"
 mkdir -p "${OUT}"
 bashio::log.info "Scan  : ${SCAN}"
-bashio::log.info "Source: ${SRC}"
-bashio::log.info "Target: ${OUT}   Keys: ${SRC}/.teslacam_keys.json (next to files)"
+bashio::log.info "Source: ${SRC} (encrypted files auto-detected by header)"
+bashio::log.info "Target: ${OUT}   Keys: ${SRC}/.teslacam_keys.json"
 bashio::log.info "auto_decrypt=${AUTO} direct_api=${DIRECT} key_after_decrypt=${KEYMODE} delete_originals=${DELETE}"
 
 FLAGS=""
