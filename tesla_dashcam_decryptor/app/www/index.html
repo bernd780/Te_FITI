@@ -27,6 +27,8 @@
   #mapFilterBar button.active{border-color:var(--accent);color:var(--accent)}
   #mapFilterBar .hint{flex:1}
   #cliplist{flex:1;overflow:auto;padding:4px}
+  .ghead{position:sticky;top:0;background:var(--panel2);padding:6px 9px;font-size:11px;font-weight:600;color:var(--txt);cursor:pointer;border-radius:6px;margin-top:5px;display:flex;justify-content:space-between;align-items:center}
+  .ghead .cnt{color:var(--muted);font-weight:400}
   .cliprow{padding:4px 6px;border-radius:6px;cursor:pointer;font-size:12px;display:flex;align-items:center;gap:8px;color:var(--txt)}
   .cliprow:hover{background:var(--panel2)} .cliprow.active{background:var(--accent);color:#fff}
   .cliprow .thumb{width:64px;height:36px;flex:none;object-fit:cover;border-radius:4px;background:#0e1318;border:1px solid var(--line)}
@@ -228,6 +230,20 @@ async function loadClips(keepActive){
   if(keepActive&&activeId){const c=allClips.find(x=>x.id===activeId); if(c) markActive(activeId);}
 }
 function clipState(c){ return c.has_locked&&!c.playable&&!c.needs_prepare ? "locked" : (c.needs_prepare?"key":"ready"); }
+let _collapsed={};
+function _lockBadge(c){
+  if(!c.has_locked && !c.needs_prepare) return "";
+  if(c.needs_prepare) return '<span title="encrypted – key available" style="color:var(--ok)">🔒</span>';
+  return '<span title="encrypted – no key">🔒</span>';
+}
+function _clipRow(c){
+  const r=document.createElement("div"); r.className="cliprow"+(c.id===activeId?" active":""); r.dataset.id=c.id;
+  const badges=(c.has_tel?'<span title="Telemetry/HUD available">📊</span>':"")+(c.has_event?'<span title="Event present – player jumps to event">📅</span>':"")+_lockBadge(c);
+  const tm=c.timestamp.replace("_"," ").replace(/-/g,(m,i)=>i>9?":":"-");
+  r.innerHTML=`<img class="thumb" loading="lazy" src="api/thumb?id=${encodeURIComponent(c.id)}" onerror="this.classList.add('noimg');this.removeAttribute('src')"><span class="cmid"><span class="cliptime">${tm}</span><span class="badges">${badges}</span></span>`;
+  r.onclick=()=>open(c);
+  return r;
+}
 function buildSidebar(){
   const q=$("#search").value.trim().toLowerCase(), fDrive=$("#filterDrive").checked, fEvent=$("#filterEvent").checked;
   const filtered=[];
@@ -243,13 +259,21 @@ function buildSidebar(){
   }
   filtered.sort((a,b)=>b.timestamp.localeCompare(a.timestamp));
   const el=$("#cliplist"); el.innerHTML="";
-  for(const c of filtered){
-    const r=document.createElement("div"); r.className="cliprow"+(c.id===activeId?" active":""); r.dataset.id=c.id;
-    const badges=(c.has_tel?'<span title="Telemetry/HUD available">📊</span>':"")+(c.has_event?'<span title="Event present – player jumps to event">📅</span>':"")+(c.has_locked?' <span title="encrypted – no key">🔒</span>':"");
-    const tm=c.timestamp.replace("_"," ").replace(/-/g,(m,i)=>i>9?":":"-");
-    r.innerHTML=`<img class="thumb" loading="lazy" src="api/thumb?id=${encodeURIComponent(c.id)}" onerror="this.classList.add('noimg');this.removeAttribute('src')"><span class="cmid"><span class="cliptime">${tm}</span><span class="badges">${badges}</span></span>`;
-    r.onclick=()=>open(c);
-    el.appendChild(r);
+  const vehicles=new Set(filtered.map(c=>c.vehicle).filter(Boolean));
+  if(vehicles.size>0){
+    const groups={}; const ungrouped=[];
+    for(const c of filtered){ if(c.vehicle)(groups[c.vehicle]||=[]).push(c); else ungrouped.push(c); }
+    const sorted=[...vehicles].sort();
+    for(const v of sorted){
+      const head=document.createElement("div"); head.className="ghead";
+      head.innerHTML=`<span>${(_collapsed[v]?"▸ ":"▾ ")+v}</span><span class="cnt">${groups[v].length}</span>`;
+      head.onclick=()=>{_collapsed[v]=!_collapsed[v];buildSidebar();};
+      el.appendChild(head);
+      if(!_collapsed[v]) for(const c of groups[v]) el.appendChild(_clipRow(c));
+    }
+    for(const c of ungrouped) el.appendChild(_clipRow(c));
+  } else {
+    for(const c of filtered) el.appendChild(_clipRow(c));
   }
 }
 function markActive(id){ [...document.querySelectorAll(".cliprow")].forEach(r=>r.classList.toggle("active",r.dataset.id===id)); }

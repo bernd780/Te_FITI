@@ -178,8 +178,10 @@ def _scan(keys=None):
         sr = os.path.relpath(path, SCAN_DIR).replace("\\", "/")
         folder = posixpath.dirname(sr)
         ck = folder + "|" + ts
+        top = folder.split("/")[0] if folder else ""
+        vehicle = top if top.lower().startswith("tesla") and top.lower() not in ("teslacam",) else ""
         c = clips.setdefault(ck, {"id": ck, "folder": folder, "timestamp": ts,
-                                  "source": folder.split("/")[0] if folder else "",
+                                  "source": top, "vehicle": vehicle,
                                   "cameras": {}, "telemetry": None})
         c["cameras"][cam] = _cam_state(sr, keys)
         if cam == "front" and os.path.exists(cache_abspath(_telsr(folder, ts))):
