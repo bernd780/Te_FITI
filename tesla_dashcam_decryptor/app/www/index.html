@@ -110,7 +110,7 @@
     </div>
     <div id="filterbar">
       <input type="text" id="search" placeholder="Filter: date/time…">
-      <label><input type="checkbox" id="filterDrive"> 📊 Fahren</label>
+      <label><input type="checkbox" id="filterDrive"> 📊 Driving</label>
       <label><input type="checkbox" id="filterEvent"> 📅 Event</label>
     </div>
     <div id="cliplist"></div>
@@ -120,7 +120,7 @@
     <div id="vctrl">
       <span id="telctrl" style="display:none;align-items:center;gap:14px">
         <label><input type="checkbox" id="t_hud" checked> HUD</label>
-        <label><input type="checkbox" id="t_nerd"> Mehr für Nerds</label>
+        <label><input type="checkbox" id="t_nerd"> Nerd info</label>
         <label><input type="checkbox" id="t_map"> 🗺️ Map</label>
       </span>
       <span id="telnone" style="display:none">— no telemetry in this clip</span>
@@ -413,10 +413,10 @@ const REASON_LABELS={"sentry_aware_object_detection":"Object detected (Sentry)",
 function nerd(f){
   const bl=((f.blink_l?"◀":"")+(f.blink_r?"▶":""))||"–";
   let lines=[
-    "t "+f.t+" s","Tempo "+f.speed_kmh+" km/h","Gang "+(f.gear??"–"),
-    "Lenkung "+(f.steer??"–")+"°","Gas "+(f.accel??"–"),"Bremse "+(f.brake?"AN":"–"),
+    "t "+f.t+" s","Speed "+f.speed_kmh+" km/h","Gear "+(f.gear??"–"),
+    "Steering "+(f.steer??"–")+"°","Throttle "+(f.accel??"–"),"Brake "+(f.brake?"ON":"–"),
     "Blinker "+bl,"Autopilot "+(f.autopilot??0),
-    "GPS "+(f.lat??"–")+", "+(f.lon??"–"),"Kurs "+(f.heading??"–")+"°"
+    "GPS "+(f.lat??"–")+", "+(f.lon??"–"),"Heading "+(f.heading??"–")+"°"
   ];
   if(curEvent) lines.push("","— Event —",...eventNerdLines());
   $("#nerd").innerHTML=lines.map(x=>"<div>"+x+"</div>").join("");
@@ -424,10 +424,10 @@ function nerd(f){
 function eventNerdLines(){
   if(!curEvent) return [];
   const e=curEvent, lines=[];
-  if(e.reason) lines.push("Grund: "+(REASON_LABELS[e.reason]||e.reason));
-  if(e.city||e.street) lines.push("Ort: "+[e.street,e.city].filter(Boolean).join(", "));
+  if(e.reason) lines.push("Reason: "+(REASON_LABELS[e.reason]||e.reason));
+  if(e.city||e.street) lines.push("Location: "+[e.street,e.city].filter(Boolean).join(", "));
   if(e.lat&&e.lon) lines.push("GPS: "+e.lat+", "+e.lon);
-  if(e.camera!=null) lines.push("Kamera: "+(CAM_LABELS[+e.camera]||e.camera));
+  if(e.camera!=null) lines.push("Camera: "+(CAM_LABELS[+e.camera]||e.camera));
   if(e.seek!=null) lines.push("Event @ "+Math.round(e.seek)+" s");
   return lines;
 }

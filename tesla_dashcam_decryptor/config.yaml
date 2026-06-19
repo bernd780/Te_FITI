@@ -1,11 +1,11 @@
 name: Te_FITI
-version: "0.4.22"
+version: "0.4.23"
 slug: te_fiti
 description: >-
-  Te_FITI (Fleet Integration, Telemetry & Infotainment): decrypts Tesla dashcam
-  clips (eCryptfs, firmware 2026.20+) from SMB/NAS, fetches FEKs once per file
-  (hybrid: Direct API + browser bookmarklet) and stores them persistently.
-  Multi-camera viewer with telemetry HUD and GPS heatmap filter.
+  Multi-camera Tesla dashcam viewer for Home Assistant with telemetry HUD,
+  GPS map and event metadata. Optionally decrypts encrypted clips (firmware
+  2026.20+) with a one-time Tesla login — keys are stored locally, everything
+  runs offline after that.
 arch:
   - aarch64
   - amd64

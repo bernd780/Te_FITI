@@ -424,7 +424,7 @@ def gen_all_thumbs():
         if targets:
             with ThreadPoolExecutor(max_workers=3) as ex:
                 list(ex.map(do, targets))
-            print(f"[thumbs] {_thumb_job['done']}/{_thumb_job['total']} Vorschauen erzeugt", flush=True)
+            print(f"[thumbs] {_thumb_job['done']}/{_thumb_job['total']} thumbnails generated", flush=True)
     finally:
         invalidate()
         _thumb_job["running"] = False

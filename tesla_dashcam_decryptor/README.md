@@ -23,7 +23,7 @@ pure local viewer without any Tesla account interaction at all.
 - **Telemetry HUD** — speed, gear, steering wheel, accelerator bar, brake
   indicator, blinkers, autopilot status (extracted from H.264 SEI NALs)
 - **GPS map** — live track from telemetry or single-point from event.json
-- **"Mehr für Nerds" panel** — raw telemetry values + event metadata
+- **"Nerd info" panel** — raw telemetry values + event metadata
   (trigger reason, location, camera)
 - **Clip browser** — grouped by source folder, searchable, filterable by
   driving telemetry / event, and by GPS area (marker map with rectangle

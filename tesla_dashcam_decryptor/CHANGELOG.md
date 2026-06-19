@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.4.23
+- All UI text and log messages translated to English
+- HACS compatible (repository.json, hacs.json)
+
+## 0.4.22
+- README rewritten: viewer-first description with optional decryption
+
+## 0.4.21
+- Sidebar filters: "Driving" (clips with SEI telemetry) and "Event" (clips with event.json) replace the old "locked" filter
+
+## 0.4.20
+- "Nerd info" panel shows event metadata (trigger reason, location, camera) for all clips with event.json — even without SEI telemetry
+
+## 0.4.19
+- GPS map shown for clips with event.json location (even without driving telemetry)
+- /api/event returns full event data (GPS, reason, city, street, camera)
+
+## 0.4.18
+- Autopilot indicator hidden when inactive
+
+## 0.4.17
+- Brake indicator only red when active (replaced emoji with CSS-styleable symbol)
+
+## 0.4.16
+- index.html served with Cache-Control: no-cache (fixes stale UI after updates)
+
+## 0.4.15
+- Heatmap replaced with clickable marker dots per clip
+- New green accelerator bar in HUD
+- Brake indicator dimmed when inactive
+
+## 0.4.14
+- Persistent metadata cache (.meta_cache.json) — much faster startup after first scan
+- leaflet-draw replaced with native rectangle selection (fixes HA Ingress CSP block)
+
 ## 0.4.13
 - Fixed: plain (unencrypted) clips never got SEI telemetry extracted automatically — `/api/prepare` (which runs telemetry extraction) was only triggered when a clip had an encrypted camera. Now triggered transparently in the background when opening a plain clip without cached telemetry.
 - New: "🛰️ Extract all telemetry" batch button (Keys panel, step E) to backfill telemetry for all existing plain clips that are missing it.
