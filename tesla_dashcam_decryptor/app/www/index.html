@@ -110,7 +110,8 @@
     </div>
     <div id="filterbar">
       <input type="text" id="search" placeholder="Filter: date/time…">
-      <label><input type="checkbox" id="onlylocked"> only 🔒 without key</label>
+      <label><input type="checkbox" id="filterDrive"> 📊 Fahren</label>
+      <label><input type="checkbox" id="filterEvent"> 📅 Event</label>
     </div>
     <div id="cliplist"></div>
   </aside>
@@ -231,10 +232,11 @@ async function loadClips(keepActive){
 }
 function clipState(c){ return c.has_locked&&!c.playable&&!c.needs_prepare ? "locked" : (c.needs_prepare?"key":"ready"); }
 function buildSidebar(){
-  const q=$("#search").value.trim().toLowerCase(), onlyLocked=$("#onlylocked").checked;
+  const q=$("#search").value.trim().toLowerCase(), fDrive=$("#filterDrive").checked, fEvent=$("#filterEvent").checked;
   const groups={};
   for(const c of allClips){
-    if(onlyLocked && !c.has_locked) continue;
+    if(fDrive && !c.has_tel) continue;
+    if(fEvent && !c.has_event) continue;
     if(q && !(c.timestamp.toLowerCase().includes(q) || (c.folder||"").toLowerCase().includes(q))) continue;
     // GPS-Filter anwenden
     if(gpsFilter){
@@ -559,7 +561,8 @@ async function boot(){
   $("#dlzip").onclick=()=>{ if(!activeId){return;} $("#vmsg").textContent="Creating ZIP…"; const a=document.createElement("a"); a.href="api/zip?id="+encodeURIComponent(activeId); a.click(); setTimeout(()=>$("#vmsg").textContent="",5000); };
   $("#permdec").onclick=async()=>{ if(!activeId){return;} $("#vmsg").textContent="Decrypting & saving…"; const r=await fetch("api/prepare",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:activeId})}).then(r=>r.json()).catch(()=>({ok:false})); $("#vmsg").textContent=(r&&(r.ok||r.clip))?"✓ permanently saved (folder decrypted/)":"Error"; refreshStatus(); loadClips(true); };
   $("#search").oninput=buildSidebar;
-  $("#onlylocked").onchange=buildSidebar;
+  $("#filterDrive").onchange=buildSidebar;
+  $("#filterEvent").onchange=buildSidebar;
   $("#heatmapbtn").onclick=()=>{
     const c=$("#mapFilterContainer");
     const show=c.style.display==="none"||c.style.display==="";
