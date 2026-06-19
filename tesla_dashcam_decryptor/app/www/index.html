@@ -298,15 +298,16 @@ async function open(c, _prepared){
   }
   // Telemetrie laden (falls vorhanden)
   tele = c.telemetry ? await fetch(c.telemetry).then(r=>r.json()).catch(()=>null) : null;
-  buildGps(); if($("#t_map").checked) showMap(true);
-  // Event-Seek: wenn Event vorhanden, zum Event-Zeitpunkt spulen
+  buildGps();
+  // Event-Daten laden (Seek, GPS-Fallback, Reason)
   initialSeek = null;
+  let eventData = null;
   if(c.has_event){
-    try{
-      const ej=await fetch(`api/event?id=${encodeURIComponent(c.id)}`).then(r=>r.json()).catch(()=>null);
-      if(ej&&ej.seek>=0) initialSeek=ej.seek;
-    }catch(e){}
+    try{ eventData=await fetch(`api/event?id=${encodeURIComponent(c.id)}`).then(r=>r.json()).catch(()=>null); }catch(e){}
+    if(eventData&&eventData.seek>=0) initialSeek=eventData.seek;
+    if(!gpsPts.length && eventData&&eventData.lat&&eventData.lon) gpsPts=[[eventData.lat,eventData.lon]];
   }
+  if($("#t_map").checked) showMap(true);
   // key available -> decrypt transparently and play immediately
   if(anyKey && !_prepared){ return prepareAndOpen(c.id); }
   if(anyPlay){
@@ -390,12 +391,16 @@ function showMap(on){
 }
 function mapMarker(f){ if(lmark&&f&&f.lat&&f.lon) lmark.setLatLng([f.lat,f.lon]); }
 function updateTelControls(){
-  const has=!!(tele&&tele.frame_count);
-  $("#telctrl").style.display=has?"inline-flex":"none";
-  $("#telnone").style.display=has?"none":"inline";
-  $("#t_map").parentElement.style.display=gpsPts.length?"inline-flex":"none";
-  if(!has){ $("#hud").style.display="none"; $("#nerd").style.display="none"; }
-  if(!gpsPts.length){ $("#map").style.display="none"; $("#t_map").checked=false; }
+  const hasTel=!!(tele&&tele.frame_count);
+  const hasGps=gpsPts.length>0;
+  const hasAny=hasTel||hasGps;
+  $("#telctrl").style.display=hasAny?"inline-flex":"none";
+  $("#telnone").style.display=hasAny?"none":"inline";
+  $("#t_hud").parentElement.style.display=hasTel?"inline-flex":"none";
+  $("#t_nerd").parentElement.style.display=hasTel?"inline-flex":"none";
+  $("#t_map").parentElement.style.display=hasGps?"inline-flex":"none";
+  if(!hasTel){ $("#hud").style.display="none"; $("#nerd").style.display="none"; }
+  if(!hasGps){ $("#map").style.display="none"; $("#t_map").checked=false; }
 }
 function nerd(f){
   const bl=((f.blink_l?"◀":"")+(f.blink_r?"▶":""))||"–";

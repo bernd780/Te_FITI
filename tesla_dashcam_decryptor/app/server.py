@@ -242,8 +242,8 @@ def counts(clips):
         "with_data": sum(1 for c in clips if c.get("has_data")),
     }
 
-def _get_event_seek(cid):
-    """Calculates the seek offset (s) of the event timestamp relative to the clip start."""
+def _get_event_data(cid):
+    """Returns event.json data: seek offset, GPS, reason, etc."""
     folder, ts, _ = _clip_cams(cid)
     if not folder or not ts:
         return None
@@ -251,11 +251,25 @@ def _get_event_seek(cid):
     if not os.path.isfile(ej):
         return None
     try:
-        et = json.load(open(ej, encoding="utf-8")).get("timestamp", "")
-        cs = datetime.datetime.strptime(ts, "%Y-%m-%d_%H-%M-%S")
-        ev = datetime.datetime.strptime(et[:19], "%Y-%m-%dT%H:%M:%S")
-        off = (ev - cs).total_seconds()
-        return off if 0 <= off <= 3600 else None
+        ev = json.load(open(ej, encoding="utf-8"))
+        result = {}
+        et = ev.get("timestamp", "")
+        if et:
+            cs = datetime.datetime.strptime(ts, "%Y-%m-%d_%H-%M-%S")
+            evt = datetime.datetime.strptime(et[:19], "%Y-%m-%dT%H:%M:%S")
+            off = (evt - cs).total_seconds()
+            if 0 <= off <= 3600:
+                result["seek"] = off
+        lat = float(ev.get("est_lat") or ev.get("lat") or 0)
+        lon = float(ev.get("est_lon") or ev.get("lon") or 0)
+        if lat and lon:
+            result["lat"] = lat
+            result["lon"] = lon
+        if ev.get("reason"):
+            result["reason"] = ev["reason"]
+        if ev.get("city"):
+            result["city"] = ev["city"]
+        return result if result else None
     except Exception:
         return None
 
@@ -602,10 +616,10 @@ class H(BaseHTTPRequestHandler):
             return self._file(t, ct, {"Cache-Control": "max-age=86400"})
         if path == "/api/event":
             cid = self._qs("id")
-            seek = _get_event_seek(cid)
-            if seek is None:
+            data = _get_event_data(cid)
+            if data is None:
                 return self._send(404, {"error": "no event"})
-            return self._send(200, {"seek": seek})
+            return self._send(200, data)
         if path == "/api/all_gps":
             clips = clips_cached()
             pts = []
