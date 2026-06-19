@@ -363,7 +363,7 @@ function hud(f){
   $("#h-gear").textContent=f.gear??"–"; $("#h-spd").textContent=Math.abs(Math.round(f.speed_kmh||0));
   $("#h-l").classList.toggle("on",!!f.blink_l); $("#h-r").classList.toggle("on",!!f.blink_r);
   const accelPct=Math.min(100,Math.max(0,f.accel||0)); $("#h-accel-fill").style.height=accelPct+"%";
-  $("#h-brake").classList.toggle("on",!!f.brake); $("#h-ap").classList.toggle("on",(f.autopilot||0)>0);
+  $("#h-brake").classList.toggle("on",!!f.brake); const ap=(f.autopilot||0)>0; $("#h-ap").classList.toggle("on",ap); $("#h-ap").style.display=ap?"flex":"none";
   $("#h-wheel").style.transform=`rotate(${f.steer||0}deg)`; $("#h-steer").classList.toggle("on",Math.abs(f.steer||0)>3);
 }
 function applyHud(){ $("#hud").style.display=(tele&&tele.frame_count&&$("#t_hud").checked)?"flex":"none"; }
