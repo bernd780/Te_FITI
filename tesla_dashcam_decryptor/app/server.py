@@ -138,16 +138,19 @@ def _compute_meta(c):
             ht = False
     ejp = os.path.join(SCAN_DIR, c["folder"], "event.json")
     he = os.path.isfile(ejp)
-    if not gps_center and he:
+    reason = None
+    if he:
         try:
             ev = json.load(open(ejp, encoding="utf-8"))
-            lat = float(ev.get("est_lat") or ev.get("lat") or 0)
-            lon = float(ev.get("est_lon") or ev.get("lon") or 0)
-            if lat and lon:
-                gps_center = {"center_lat": lat, "center_lon": lon}
+            reason = ev.get("reason") or None
+            if not gps_center:
+                lat = float(ev.get("est_lat") or ev.get("lat") or 0)
+                lon = float(ev.get("est_lon") or ev.get("lon") or 0)
+                if lat and lon:
+                    gps_center = {"center_lat": lat, "center_lon": lon}
         except Exception:
             pass
-    return {"has_tel": ht, "has_event": he, "gps_bounds": gps_center, "has_data": ht or he}
+    return {"has_tel": ht, "has_event": he, "gps_bounds": gps_center, "has_data": ht or he, "reason": reason}
 
 def _finalize(c):
     sts = [cm["state"] for cm in c["cameras"].values()]
@@ -156,13 +159,14 @@ def _finalize(c):
     c["playable"] = any(s in ("plain", "ready") for s in sts)
     cid = c["id"]
     cached = _meta_cache.get(cid)
-    if cached is None:
+    if cached is None or "reason" not in cached:
         cached = _compute_meta(c)
         _meta_cache[cid] = cached
     c["has_tel"] = cached["has_tel"]
     c["has_event"] = cached["has_event"]
     c["gps_bounds"] = cached.get("gps_bounds")
     c["has_data"] = cached["has_data"]
+    c["reason"] = cached.get("reason")
     return c
 
 

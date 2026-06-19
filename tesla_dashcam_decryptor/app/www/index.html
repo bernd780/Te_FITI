@@ -112,6 +112,7 @@
       <input type="text" id="search" placeholder="Filter: date/time…">
       <label><input type="checkbox" id="filterDrive"> 📊 Driving</label>
       <label><input type="checkbox" id="filterEvent"> 📅 Event</label>
+      <label><input type="checkbox" id="filterHonk"> 📯 Honk</label>
     </div>
     <div id="cliplist"></div>
   </aside>
@@ -246,11 +247,12 @@ function _clipRow(c){
   return r;
 }
 function buildSidebar(){
-  const q=$("#search").value.trim().toLowerCase(), fDrive=$("#filterDrive").checked, fEvent=$("#filterEvent").checked;
+  const q=$("#search").value.trim().toLowerCase(), fDrive=$("#filterDrive").checked, fEvent=$("#filterEvent").checked, fHonk=$("#filterHonk").checked;
   const filtered=[];
   for(const c of allClips){
     if(fDrive && !c.has_tel) continue;
     if(fEvent && !c.has_event) continue;
+    if(fHonk && c.reason!=="user_interaction_honk") continue;
     if(q && !(c.timestamp.toLowerCase().includes(q) || (c.folder||"").toLowerCase().includes(q))) continue;
     if(gpsFilter){
       const hasPtInBounds = c.gps_bounds && gpsFilter.contains([c.gps_bounds.center_lat, c.gps_bounds.center_lon]);
@@ -575,6 +577,7 @@ async function boot(){
   $("#search").oninput=buildSidebar;
   $("#filterDrive").onchange=buildSidebar;
   $("#filterEvent").onchange=buildSidebar;
+  $("#filterHonk").onchange=buildSidebar;
   $("#mapbtn").onclick=()=>{
     const c=$("#mapFilterContainer");
     const show=c.style.display==="none"||c.style.display==="";
