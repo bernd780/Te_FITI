@@ -395,28 +395,33 @@ addEventListener("keydown",e=>{if(!master)return;
   if(e.code==="ArrowLeft"){const t=Math.max(0,master.currentTime-5);master.currentTime=t;slaves(v=>v.currentTime=t);}});
 
 // ---------- GPS filter (heatmap + rectangle) ----------
-let _gpsMap=null;
+let _gpsMap=null, _mapReady=false;
 async function initMapFilter(){
-  gpsFilter=null; drawnItems=new L.FeatureGroup();
-  const gpsMap=L.map("mapFilter",{attributionControl:false,zoomControl:false});
-  _gpsMap=gpsMap;
-  L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",{maxZoom:19,attribution:''}).addTo(gpsMap);
-  gpsMap.addLayer(drawnItems);
-  const drawControl=new L.Control.Draw({draw:{polyline:false,circle:false,circlemarker:false,polygon:false,marker:false},edit:{featureGroup:drawnItems}});
-  gpsMap.addControl(drawControl);
-  const s=await fetch("api/all_gps").then(r=>r.json()).catch(()=>({points:[]}));
-  const pts=s.points||[];
-  if(pts.length){
-    heatMap=L.heatLayer(pts.map(p=>[p[0],p[1],0.5]),{radius:25,blur:15,max:1.0}).addTo(gpsMap);
-    const bounds=L.latLngBounds(pts.map(p=>[p[0],p[1]]));
-    gpsMap.fitBounds(bounds,{padding:[10,10]});
-  }
-  gpsMap.on("draw:created draw:edited",()=>{
-    const drawnBounds=drawnItems.getBounds();
-    gpsFilter=drawnBounds.isValid()?drawnBounds:null;
-    buildSidebar();
-  });
-  $("#filterResetBtn").onclick=()=>{gpsFilter=null; drawnItems.clearLayers(); buildSidebar();};
+  if(_mapReady) return;
+  if(!window.L || !L.Control || !L.Control.Draw) return;
+  try {
+    _mapReady=true;
+    gpsFilter=null; drawnItems=new L.FeatureGroup();
+    const gpsMap=L.map("mapFilter",{attributionControl:false,zoomControl:false});
+    _gpsMap=gpsMap;
+    L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",{maxZoom:19,attribution:''}).addTo(gpsMap);
+    gpsMap.addLayer(drawnItems);
+    const drawControl=new L.Control.Draw({draw:{polyline:false,circle:false,circlemarker:false,polygon:false,marker:false},edit:{featureGroup:drawnItems}});
+    gpsMap.addControl(drawControl);
+    const s=await fetch("api/all_gps").then(r=>r.json()).catch(()=>({points:[]}));
+    const pts=s.points||[];
+    if(pts.length){
+      heatMap=L.heatLayer(pts.map(p=>[p[0],p[1],0.5]),{radius:25,blur:15,max:1.0}).addTo(gpsMap);
+      const bounds=L.latLngBounds(pts.map(p=>[p[0],p[1]]));
+      gpsMap.fitBounds(bounds,{padding:[10,10]});
+    }
+    gpsMap.on("draw:created draw:edited",()=>{
+      const drawnBounds=drawnItems.getBounds();
+      gpsFilter=drawnBounds.isValid()?drawnBounds:null;
+      buildSidebar();
+    });
+    $("#filterResetBtn").onclick=()=>{gpsFilter=null; drawnItems.clearLayers(); buildSidebar();};
+  } catch(e) { _mapReady=false; console.error("Map init failed:", e); }
 }
 
 // ---------- Tools (fetch keys) ----------
@@ -468,11 +473,13 @@ async function boot(){
     const c=$("#mapFilterContainer");
     const show=c.style.display==="none"||c.style.display==="";
     c.style.display=show?"flex":"none";
-    if(show&&_gpsMap) setTimeout(()=>_gpsMap.invalidateSize(),50);
+    if(show){ initMapFilter().then(()=>{ if(_gpsMap) setTimeout(()=>_gpsMap.invalidateSize(),50); }); }
   };
-  await initMapFilter();
-  await refreshStatus(); await loadClips(false);
-  setInterval(refreshStatus,5000);
+  // Clips must always load even if the GPS map fails (e.g. leaflet-draw CDN blocked in ingress)
+  try { await initMapFilter(); } catch(e){ console.error("GPS map init failed:", e); }
+  try { await refreshStatus(); } catch(e){ console.error("status failed:", e); }
+  await loadClips(false);
+  setInterval(()=>refreshStatus().catch(()=>{}),5000);
 }
 boot();
 </script>
