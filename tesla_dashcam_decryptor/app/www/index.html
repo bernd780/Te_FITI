@@ -170,6 +170,11 @@
       <div class="row"><button class="btn" id="thumbsbtn">🖼️ Generate thumbnails</button><span id="thumbmsg" style="color:var(--muted);font-size:12px"></span></div>
     </div>
     <div class="step">
+      <h3>E · Backfill telemetry for unencrypted clips</h3>
+      <p>Plain (unencrypted) clips only get their SEI telemetry (speed, gear, steering, …) extracted when opened in the viewer. Run this once to extract it for all existing plain clips that don't have it yet:</p>
+      <div class="row"><button class="btn" id="telbtn">🛰️ Extract all telemetry</button><span id="telmsg" style="color:var(--muted);font-size:12px"></span></div>
+    </div>
+    <div class="step">
       <h3>D · Bookmarklet (fallback if API is blocked)</h3>
       <p>1) <a class="btn" id="dljob" href="api/pending.json" download>pending_items.json</a> download.
          2) Log in to <a class="btn ghost" href="https://dashcam.tesla.com" target="_blank" rel="noopener">dashcam.tesla.com</a>, run bookmarklet → downloads <code>keys.json</code>.
@@ -298,7 +303,19 @@ async function open(c, _prepared){
   }
   // key available -> decrypt transparently and play immediately
   if(anyKey && !_prepared){ return prepareAndOpen(c.id); }
-  if(anyPlay){ $("#bar").style.display="flex"; setupMaster(); applyHud(); updateTelControls(); return; }
+  if(anyPlay){
+    $("#bar").style.display="flex"; setupMaster(); applyHud(); updateTelControls();
+    const frontCam=c.cameras.front;
+    if(!tele && frontCam && frontCam.state==="plain"){
+      fetch("api/prepare",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:c.id})})
+        .then(r=>r.json()).then(async r=>{
+          if(activeId!==c.id || !r || !r.clip || !r.clip.telemetry) return;
+          const t=await fetch(r.clip.telemetry).then(r=>r.json()).catch(()=>null);
+          if(t && activeId===c.id){ tele=t; buildGps(); applyHud(); updateTelControls(); }
+        }).catch(()=>{});
+    }
+    return;
+  }
   // encrypted WITHOUT key -> offer to fetch key and decrypt
   if(anyLocked){ showAction(`<div class="msg">🔒 Encrypted – no key yet.</div><button class="btn" id="getkey">🔑 Fetch key &amp; play</button><div class="msg" id="gkmsg"></div>`); $("#getkey").onclick=()=>fetchKeyAndOpen(c.id); }
   else if(anyKey){ showAction(`<div class="msg">⚠️ Decryption failed – try again in the 🔑 panel.</div>`); }
@@ -455,6 +472,24 @@ async function boot(){
           clearInterval(poll);
           $("#thumbmsg").textContent=j.total>0?`${j.done}/${j.total} done ✓`:"none new";
           $("#thumbsbtn").disabled=false;
+          loadClips(true);
+        }
+      }
+    },800);
+  };
+  $("#telbtn").onclick=async()=>{
+    $("#telbtn").disabled=true; $("#telmsg").textContent="Extracting…";
+    await fetch("api/telemetry_all",{method:"POST"});
+    const poll=setInterval(async()=>{
+      const s=await fetch("api/status").then(r=>r.json()).catch(()=>null);
+      if(s&&s.tel_job){
+        const j=s.tel_job;
+        if(j.running){
+          $("#telmsg").textContent=`${j.done}/${j.total}…`;
+        } else {
+          clearInterval(poll);
+          $("#telmsg").textContent=j.total>0?`${j.done}/${j.total} done ✓`:"none new";
+          $("#telbtn").disabled=false;
           loadClips(true);
         }
       }

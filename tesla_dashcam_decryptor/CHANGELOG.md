@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.13
+- Fixed: plain (unencrypted) clips never got SEI telemetry extracted automatically — `/api/prepare` (which runs telemetry extraction) was only triggered when a clip had an encrypted camera. Now triggered transparently in the background when opening a plain clip without cached telemetry.
+- New: "🛰️ Extract all telemetry" batch button (Keys panel, step E) to backfill telemetry for all existing plain clips that are missing it.
+- New: `POST /api/telemetry_all` endpoint + `tel_job` progress in `/api/status`.
+
 ## 0.4.12
 - Loading indicator in sidebar ("⏳ Loading clips…") and header while the clip list fetches, so large libraries (1000s of clips) don't look stuck/empty
 

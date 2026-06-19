@@ -20,6 +20,7 @@ ffmpeg at the event timestamp (event.json) or ~1 s and caches it.
   POST /api/prepare           {id} -> decrypt clip on demand, return fresh clip
   POST /api/fetch             Direct API: fetch missing keys now
   POST /api/decrypt           decrypt all keyed clips now (batch)
+  POST /api/telemetry_all     extract SEI telemetry for all plain clips missing it (batch)
   POST /api/keys              FEKs (bookmarklet) -> store
   GET  /api/pending.json      items (without key) for the bookmarklet
   GET  /api/login/url         Direct API: login URL
@@ -59,6 +60,8 @@ _lcache = {"t": 0.0, "data": None}
 _lcache_guard = threading.Lock()
 _thumb_job = {"running": False, "done": 0, "total": 0}
 _thumb_guard = threading.Lock()
+_tel_job = {"running": False, "done": 0, "total": 0}
+_tel_guard = threading.Lock()
 
 
 # ---------- Path helpers (scanrel = path relative to SCAN_DIR, posix) ----------
@@ -376,6 +379,36 @@ def gen_all_thumbs():
         _thumb_job["running"] = False
 
 
+def gen_all_telemetry():
+    """Batch: extract SEI telemetry for all plain front-camera clips that don't have it cached yet."""
+    global _tel_job
+    if _tel_job.get("running"):
+        return
+    clips = _scan()
+    targets = []
+    for c in clips:
+        front = c["cameras"].get("front")
+        if front and front["state"] == "plain" and not c.get("has_tel"):
+            targets.append(_sr_of_cam(c["folder"], c["timestamp"], "front"))
+    _tel_job = {"running": True, "done": 0, "total": len(targets)}
+    def do(sr):
+        try:
+            telp = os.path.splitext(cache_abspath(sr))[0] + ".telemetry.json"
+            pipeline.telemetry_for_plain(src_abspath(sr), telp)
+        except Exception as e:
+            print(f"[telemetry] {sr}: {e}", flush=True)
+        with _tel_guard:
+            _tel_job["done"] += 1
+    try:
+        if targets:
+            with ThreadPoolExecutor(max_workers=3) as ex:
+                list(ex.map(do, targets))
+            print(f"[telemetry] {_tel_job['done']}/{_tel_job['total']} extracted", flush=True)
+    finally:
+        invalidate()
+        _tel_job["running"] = False
+
+
 # ---------- Direct API ----------
 def api_fetch(items):
     global _last_api
@@ -522,6 +555,7 @@ class H(BaseHTTPRequestHandler):
             st["login"] = auth.status()
             st["last_api"] = _last_api
             st["thumb_job"] = _thumb_job
+            st["tel_job"] = _tel_job
             return self._send(200, st)
         if path == "/api/clips":
             return self._send(200, clips_cached())
@@ -621,6 +655,9 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, {"ok": True})
         if path == "/api/thumbs_all":
             bg(gen_all_thumbs)
+            return self._send(200, {"ok": True})
+        if path == "/api/telemetry_all":
+            bg(gen_all_telemetry)
             return self._send(200, {"ok": True})
         if path == "/api/login/exchange":
             try:
