@@ -231,10 +231,11 @@ async function loadClips(keepActive){
 }
 function clipState(c){ return c.has_locked&&!c.playable&&!c.needs_prepare ? "locked" : (c.needs_prepare?"key":"ready"); }
 let _collapsed={};
+const _lockSvg=(color,title)=>`<svg title="${title}" width="12" height="14" viewBox="0 0 24 28" style="vertical-align:middle"><path d="M6 12V8a6 6 0 1 1 12 0v4h1a3 3 0 0 1 3 3v8a3 3 0 0 1-3 3H5a3 3 0 0 1-3-3v-8a3 3 0 0 1 3-3h1z" fill="${color}"/></svg>`;
 function _lockBadge(c){
   if(!c.has_locked && !c.needs_prepare) return "";
-  if(c.needs_prepare) return '<span title="encrypted – key available" style="color:var(--ok)">🔒</span>';
-  return '<span title="encrypted – no key">🔒</span>';
+  if(c.needs_prepare) return _lockSvg("#34d399","encrypted – key available");
+  return _lockSvg("#9aa7b4","encrypted – no key");
 }
 function _clipRow(c){
   const r=document.createElement("div"); r.className="cliprow"+(c.id===activeId?" active":""); r.dataset.id=c.id;
