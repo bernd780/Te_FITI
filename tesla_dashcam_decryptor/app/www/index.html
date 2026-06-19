@@ -96,7 +96,7 @@
   <h1>Te_FITI</h1>
   <span id="status">⏳ loading…</span>
   <button class="toolbtn" id="toolsbtn">🔑 Keys</button>
-  <button class="toolbtn" id="heatmapbtn" title="GPS heatmap of all clips">🗺️ Heatmap</button>
+  <button class="toolbtn" id="mapbtn" title="GPS map of all clips">🗺️ Map</button>
 </header>
 <main>
   <aside id="sidebar">
@@ -467,7 +467,7 @@ async function initMapFilter(){
         m.on("click",()=>{const c=allClips.find(x=>x.id===p[2]); if(c) open(c);});
         _gpsMarkers.push(m);
       }
-      gpsMap.fitBounds(L.latLngBounds(pts.map(p=>[p[0],p[1]])),{padding:[10,10]});
+      gpsMap.setView([pts[0][0],pts[0][1]],14);
     }
     function enterDraw(){ _drawMode=true; gpsMap.dragging.disable(); $("#drawRectBtn").classList.add("active"); $("#drawHint").textContent="Click & drag to select area"; }
     function exitDraw(){ _drawMode=false; gpsMap.dragging.enable(); $("#drawRectBtn").classList.remove("active"); $("#drawHint").textContent=""; }
@@ -563,7 +563,7 @@ async function boot(){
   $("#search").oninput=buildSidebar;
   $("#filterDrive").onchange=buildSidebar;
   $("#filterEvent").onchange=buildSidebar;
-  $("#heatmapbtn").onclick=()=>{
+  $("#mapbtn").onclick=()=>{
     const c=$("#mapFilterContainer");
     const show=c.style.display==="none"||c.style.display==="";
     c.style.display=show?"flex":"none";
