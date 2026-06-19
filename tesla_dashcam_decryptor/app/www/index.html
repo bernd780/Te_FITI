@@ -5,10 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Te_FITI</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
-<link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css"/>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
-<script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
 <style>
   :root{--bg:#0b0d10;--panel:#15191e;--panel2:#1d232b;--line:#2a323c;--txt:#e7edf3;--muted:#9aa7b4;--accent:#3b82f6;--ok:#34d399;--warn:#fbbf24;--bad:#f87171}
   *{box-sizing:border-box}
@@ -23,10 +21,12 @@
   #filterbar{padding:8px;border-bottom:1px solid var(--line);display:flex;flex-direction:column;gap:6px}
   #search{width:100%;background:#0e1318;border:1px solid var(--line);color:var(--txt);border-radius:7px;padding:7px 9px;font-size:12px}
   #filterbar label{font-size:11px;color:var(--muted);display:flex;align-items:center;gap:6px;cursor:pointer}
-  #mapFilterContainer{height:200px;border-bottom:1px solid var(--line);display:none;flex-direction:column}
-  #mapFilter{flex:1}
-  #filterReset{padding:6px;text-align:center;border-bottom:1px solid var(--line);font-size:11px}
-  #filterReset button{background:var(--panel2);border:1px solid var(--line);color:var(--txt);padding:4px 8px;border-radius:4px;cursor:pointer;font-size:11px}
+  #mapFilterContainer{height:220px;border-bottom:1px solid var(--line);display:none;flex-direction:column}
+  #mapFilter{flex:1;cursor:crosshair}
+  #mapFilterBar{padding:4px 8px;display:flex;align-items:center;gap:8px;font-size:11px;color:var(--muted);border-bottom:1px solid var(--line);background:var(--panel2)}
+  #mapFilterBar button{background:var(--panel2);border:1px solid var(--line);color:var(--txt);padding:3px 8px;border-radius:4px;cursor:pointer;font-size:11px}
+  #mapFilterBar button.active{border-color:var(--accent);color:var(--accent)}
+  #mapFilterBar .hint{flex:1}
   #cliplist{flex:1;overflow:auto;padding:4px}
   .ghead{position:sticky;top:0;background:var(--panel2);padding:6px 9px;font-size:11px;font-weight:600;color:var(--txt);cursor:pointer;border-radius:6px;margin-top:5px;display:flex;justify-content:space-between;align-items:center}
   .ghead .cnt{color:var(--muted);font-weight:400}
@@ -100,8 +100,12 @@
 <main>
   <aside id="sidebar">
     <div id="mapFilterContainer">
+      <div id="mapFilterBar">
+        <button id="drawRectBtn" title="Draw rectangle to filter clips">▭ Select area</button>
+        <span class="hint" id="drawHint"></span>
+        <button id="filterResetBtn">↻ Reset</button>
+      </div>
       <div id="mapFilter"></div>
-      <div id="filterReset"><button id="filterResetBtn">↻ Reset filter</button></div>
     </div>
     <div id="filterbar">
       <input type="text" id="search" placeholder="Filter: date/time…">
@@ -198,7 +202,7 @@ const SRC_ORDER=["EncryptedClips","SentryClips","SavedClips","RecentClips"];
 let allClips=[], videos=[], master=null, raf=0, tele=null, activeId=null, collapsed={};
 let lmap=null, lline=null, lmark=null, gpsPts=[];
 let initialSeek=null;
-let gpsFilter=null, heatMap=null, drawnItems=null;
+let gpsFilter=null, heatMap=null;
 
 const BM="(async()=>{const pick=document.createElement('input');pick.type='file';pick.accept='application/json,.json';pick.onchange=async()=>{try{const job=JSON.parse(await pick.files[0].text());const items=job.items||job;let raw=sessionStorage.getItem('ROCP_token'),token=raw;try{const p=JSON.parse(raw);token=(typeof p==='string')?p:(p.access_token||p.token||p.accessToken||raw);}catch(e){}if(!token){alert('No Tesla token – log in to dashcam.tesla.com first.');return;}const out=[],CH=30;for(let i=0;i<items.length;i+=CH){const r=await fetch('/api/1/decrypt/batch',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+token,'Accept':'application/json'},body:JSON.stringify({items:items.slice(i,i+CH)})});if(!r.ok){alert('API error '+r.status+' at chunk '+i);return;}const j=await r.json();(j.results||[]).forEach(x=>{if(x.key)out.push({id:x.id,key:x.key});});}const blob=new Blob([JSON.stringify({results:out})],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='keys.json';a.click();alert('Done: '+out.length+' keys -> keys.json');}catch(e){alert('Error: '+e.message);}};pick.click();})();";
 
@@ -409,33 +413,50 @@ addEventListener("keydown",e=>{if(!master)return;
   if(e.code==="ArrowRight"){const t=master.currentTime+5;master.currentTime=t;slaves(v=>v.currentTime=t);}
   if(e.code==="ArrowLeft"){const t=Math.max(0,master.currentTime-5);master.currentTime=t;slaves(v=>v.currentTime=t);}});
 
-// ---------- GPS filter (heatmap + rectangle) ----------
-let _gpsMap=null, _mapReady=false;
+// ---------- GPS filter (heatmap + rectangle, no leaflet-draw) ----------
+let _gpsMap=null, _mapReady=false, _drawMode=false, _drawRect=null, _drawStart=null;
 async function initMapFilter(){
   if(_mapReady) return;
-  if(!window.L || !L.Control || !L.Control.Draw) return;
+  if(!window.L) return;
   try {
     _mapReady=true;
-    gpsFilter=null; drawnItems=new L.FeatureGroup();
+    gpsFilter=null;
     const gpsMap=L.map("mapFilter",{attributionControl:false,zoomControl:false});
     _gpsMap=gpsMap;
     L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",{maxZoom:19,attribution:''}).addTo(gpsMap);
-    gpsMap.addLayer(drawnItems);
-    const drawControl=new L.Control.Draw({draw:{polyline:false,circle:false,circlemarker:false,polygon:false,marker:false},edit:{featureGroup:drawnItems}});
-    gpsMap.addControl(drawControl);
     const s=await fetch("api/all_gps").then(r=>r.json()).catch(()=>({points:[]}));
     const pts=s.points||[];
     if(pts.length){
       heatMap=L.heatLayer(pts.map(p=>[p[0],p[1],0.5]),{radius:25,blur:15,max:1.0}).addTo(gpsMap);
-      const bounds=L.latLngBounds(pts.map(p=>[p[0],p[1]]));
-      gpsMap.fitBounds(bounds,{padding:[10,10]});
+      gpsMap.fitBounds(L.latLngBounds(pts.map(p=>[p[0],p[1]])),{padding:[10,10]});
     }
-    gpsMap.on("draw:created draw:edited",()=>{
-      const drawnBounds=drawnItems.getBounds();
-      gpsFilter=drawnBounds.isValid()?drawnBounds:null;
+    function enterDraw(){ _drawMode=true; gpsMap.dragging.disable(); $("#drawRectBtn").classList.add("active"); $("#drawHint").textContent="Click & drag on map to select area"; }
+    function exitDraw(){ _drawMode=false; gpsMap.dragging.enable(); $("#drawRectBtn").classList.remove("active"); $("#drawHint").textContent=""; }
+    $("#drawRectBtn").onclick=()=>{ _drawMode ? exitDraw() : enterDraw(); };
+    gpsMap.on("mousedown",e=>{
+      if(!_drawMode) return;
+      _drawStart=e.latlng;
+      if(_drawRect){ gpsMap.removeLayer(_drawRect); _drawRect=null; }
+    });
+    gpsMap.on("mousemove",e=>{
+      if(!_drawMode||!_drawStart) return;
+      const b=L.latLngBounds(_drawStart,e.latlng);
+      if(_drawRect) _drawRect.setBounds(b);
+      else { _drawRect=L.rectangle(b,{color:"#3b82f6",weight:2,fillOpacity:0.15}).addTo(gpsMap); }
+    });
+    gpsMap.on("mouseup",e=>{
+      if(!_drawMode||!_drawStart) return;
+      const b=L.latLngBounds(_drawStart,e.latlng);
+      _drawStart=null;
+      if(b.getNorthEast().equals(b.getSouthWest())) return;
+      if(_drawRect) _drawRect.setBounds(b);
+      gpsFilter=b;
+      exitDraw();
       buildSidebar();
     });
-    $("#filterResetBtn").onclick=()=>{gpsFilter=null; drawnItems.clearLayers(); buildSidebar();};
+    $("#filterResetBtn").onclick=()=>{
+      gpsFilter=null; if(_drawRect){_gpsMap.removeLayer(_drawRect);_drawRect=null;} exitDraw(); buildSidebar();
+    };
   } catch(e) { _mapReady=false; console.error("Map init failed:", e); }
 }
 

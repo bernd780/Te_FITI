@@ -30,7 +30,7 @@ ffmpeg at the event timestamp (event.json) or ~1 s and caches it.
 """
 import os, json, argparse, re, glob, posixpath, threading, time, base64, zipfile, hashlib, datetime
 from urllib.parse import urlparse, parse_qs
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import keybridge, pipeline, keystore
 from tesla_auth import TeslaAuth
@@ -62,6 +62,29 @@ _thumb_job = {"running": False, "done": 0, "total": 0}
 _thumb_guard = threading.Lock()
 _tel_job = {"running": False, "done": 0, "total": 0}
 _tel_guard = threading.Lock()
+
+# Persistent metadata cache — avoids re-reading telemetry/event JSON on every scan
+_meta_cache = {}
+_META_CACHE_FILE = ""
+
+def _load_meta_cache():
+    global _meta_cache
+    if _META_CACHE_FILE and os.path.isfile(_META_CACHE_FILE):
+        try:
+            _meta_cache = json.load(open(_META_CACHE_FILE, encoding="utf-8"))
+        except Exception:
+            _meta_cache = {}
+
+def _save_meta_cache():
+    if not _META_CACHE_FILE:
+        return
+    try:
+        tmp = _META_CACHE_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(_meta_cache, f, separators=(",", ":"))
+        os.replace(tmp, _META_CACHE_FILE)
+    except Exception:
+        pass
 
 
 # ---------- Path helpers (scanrel = path relative to SCAN_DIR, posix) ----------
@@ -97,11 +120,8 @@ def _cam_state(sr, keys):
         return {"state": "locked", "url": None}
     return {"state": "plain", "url": "media/" + sr}
 
-def _finalize(c):
-    sts = [cm["state"] for cm in c["cameras"].values()]
-    c["needs_prepare"] = "key" in sts
-    c["has_locked"] = "locked" in sts
-    c["playable"] = any(s in ("plain", "ready") for s in sts)
+def _compute_meta(c):
+    """Expensive: reads telemetry + event JSON from disk."""
     telp = cache_abspath(_telsr(c["folder"], c["timestamp"]))
     ht = False
     gps_center = None
@@ -109,7 +129,6 @@ def _finalize(c):
         try:
             tel = json.load(open(telp, encoding="utf-8"))
             ht = tel.get("frame_count", 0) > 0
-            # GPS center (average of all points)
             gps_pts = [[f["lat"], f["lon"]] for f in tel.get("frames", []) if f.get("lat") and f.get("lon")]
             if gps_pts:
                 avg_lat = sum(p[0] for p in gps_pts) / len(gps_pts)
@@ -117,12 +136,8 @@ def _finalize(c):
                 gps_center = {"center_lat": avg_lat, "center_lon": avg_lon}
         except Exception:
             ht = False
-    c["has_tel"] = ht
-    # Check for event.json
     ejp = os.path.join(SCAN_DIR, c["folder"], "event.json")
     he = os.path.isfile(ejp)
-    c["has_event"] = he
-    # GPS from event.json as fallback when no telemetry GPS available
     if not gps_center and he:
         try:
             ev = json.load(open(ejp, encoding="utf-8"))
@@ -132,8 +147,22 @@ def _finalize(c):
                 gps_center = {"center_lat": lat, "center_lon": lon}
         except Exception:
             pass
-    c["gps_bounds"] = gps_center
-    c["has_data"] = ht or he
+    return {"has_tel": ht, "has_event": he, "gps_bounds": gps_center, "has_data": ht or he}
+
+def _finalize(c):
+    sts = [cm["state"] for cm in c["cameras"].values()]
+    c["needs_prepare"] = "key" in sts
+    c["has_locked"] = "locked" in sts
+    c["playable"] = any(s in ("plain", "ready") for s in sts)
+    cid = c["id"]
+    cached = _meta_cache.get(cid)
+    if cached is None:
+        cached = _compute_meta(c)
+        _meta_cache[cid] = cached
+    c["has_tel"] = cached["has_tel"]
+    c["has_event"] = cached["has_event"]
+    c["gps_bounds"] = cached.get("gps_bounds")
+    c["has_data"] = cached["has_data"]
     return c
 
 
@@ -157,6 +186,7 @@ def _scan(keys=None):
             c["telemetry"] = "media/" + _telsr(folder, ts)
     out = [_finalize(c) for c in clips.values()]
     out.sort(key=lambda x: x["timestamp"], reverse=True)
+    _save_meta_cache()
     return out
 
 
@@ -168,8 +198,10 @@ def clips_cached():
             _lcache["t"] = now
         return _lcache["data"]
 
-def invalidate():
+def invalidate(clip_id=None):
     _lcache["t"] = 0.0
+    if clip_id:
+        _meta_cache.pop(clip_id, None)
 
 
 def _clip_cams(cid):
@@ -268,7 +300,7 @@ def prepare_clip(cid):
         if jobs:
             with ThreadPoolExecutor(max_workers=min(6, len(jobs))) as ex:
                 list(ex.map(do, jobs))
-    invalidate()
+    invalidate(cid)
     return {"ok": not errs, "errors": errs, "clip": _scan_one(cid, keys)}
 
 def ensure_all():
@@ -284,6 +316,7 @@ def ensure_all():
     if jobs:
         with ThreadPoolExecutor(max_workers=4) as ex:
             list(ex.map(do, jobs))
+    _meta_cache.clear()
     invalidate()
     return {"decrypted": len(jobs)}
 
@@ -361,7 +394,7 @@ def gen_all_thumbs():
             thumb_path = _thumb_cache_path(c["id"])
             if not os.path.isfile(thumb_path):
                 targets.append(c["id"])
-    _thumb_job = {"running": True, "done": 0, "total": len(targets)}
+    _thumb_job = {"running": True, "done": 0, "total": len(targets), "started": time.time()}
     def do(cid):
         try:
             make_thumb(cid)
@@ -405,6 +438,7 @@ def gen_all_telemetry():
                 list(ex.map(do, targets))
             print(f"[telemetry] {_tel_job['done']}/{_tel_job['total']} extracted", flush=True)
     finally:
+        _meta_cache.clear()
         invalidate()
         _tel_job["running"] = False
 
@@ -699,6 +733,8 @@ if __name__ == "__main__":
     DIRECT_API = not a.no_direct_api
     auth = TeslaAuth(os.path.join(DATA_DIR, "token_store.json"))
     os.makedirs(os.path.join(OUT_DIR, ".thumbs"), exist_ok=True)
+    _META_CACHE_FILE = os.path.join(DATA_DIR, ".meta_cache.json")
+    _load_meta_cache()
     threading.Thread(target=scheduler, daemon=True).start()
     print(f"Viewer :{a.port} scan={SCAN_DIR} enc={SRC_DIR} (prefix='{ENC_PREFIX}') "
           f"out={OUT_DIR} keys={KEYS_FILE} auto_decrypt={AUTO_DECRYPT} "
