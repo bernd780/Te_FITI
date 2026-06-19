@@ -38,6 +38,7 @@
   .cliprow .cmid{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px}
   .cliprow .cliptime{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .cliprow .badges{font-size:11px;opacity:.95}
+  #cliplist .loading{padding:18px 10px;color:var(--muted);font-size:12px;text-align:center}
   /* Content / Player */
   #content{flex:1;display:flex;flex-direction:column;gap:10px;padding:12px;min-width:0}
   #meta{font-size:12px;color:var(--muted);min-height:16px}
@@ -92,7 +93,7 @@
 <body>
 <header>
   <h1>Te_FITI</h1>
-  <span id="status"></span>
+  <span id="status">⏳ loading…</span>
   <button class="toolbtn" id="toolsbtn">🔑 Keys</button>
   <button class="toolbtn" id="heatmapbtn" title="GPS heatmap of all clips">🗺️ Heatmap</button>
 </header>
@@ -212,6 +213,7 @@ async function refreshStatus(){
 
 // ---------- Clip browser ----------
 async function loadClips(keepActive){
+  if(!keepActive) $("#cliplist").innerHTML='<div class="loading">⏳ Loading clips…</div>';
   allClips=await fetch("api/clips").then(r=>r.json()).catch(()=>[]);
   buildSidebar();
   if(keepActive&&activeId){const c=allClips.find(x=>x.id===activeId); if(c) markActive(activeId);}

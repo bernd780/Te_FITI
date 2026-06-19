@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.4.12
+- Loading indicator in sidebar ("⏳ Loading clips…") and header while the clip list fetches, so large libraries (1000s of clips) don't look stuck/empty
+
 ## 0.4.11
 - Fixed: duplicate `id="tools"` element (stray leftover markup) broke the Keys/Decryption panel lookup
 
