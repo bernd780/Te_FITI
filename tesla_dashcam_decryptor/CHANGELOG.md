@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.4.11
+- Fixed: duplicate `id="tools"` element (stray leftover markup) broke the Keys/Decryption panel lookup
+
 ## 0.4.7
 - GPS heatmap filter in sidebar (Leaflet + leaflet.heat + leaflet-draw)
 - GPS coordinates from `event.json` as fallback for clips without telemetry
