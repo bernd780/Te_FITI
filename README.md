@@ -8,6 +8,8 @@ metadata. It can optionally decrypt encrypted clips (firmware 2026.20+) —
 this requires a one-time login to your Tesla account to fetch the encryption
 keys; after that, everything runs fully local and offline.
 
+![Te_FITI Screenshot](docs/screenshot.png)
+
 ## Installation
 
 1. **Settings → Add-ons → Add-on Store**
