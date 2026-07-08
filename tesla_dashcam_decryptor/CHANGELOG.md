@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.6.0
+- New map-centric landing page with trip routes, event markers, and a slide-out clip browser panel (replaces the small GPS filter panel; rectangle-select-to-filter preserved on the new map)
+- Trips: clips are grouped into drives by a 20-minute gap-threshold algorithm, with distance (GPS haversine, no odometer data available) and event counts; floating trip card with prev/next navigation
+- New Analytics tab: storage usage per folder/vehicle, trip/clip statistics, events-by-reason and clips-by-month charts (dependency-free inline SVG/CSS, no new CDN dependency)
+- Light/dark theme toggle (persisted, respects OS preference on first load) alongside the existing dark theme
+- New inline SVG icon set for map markers, tab navigation, and the theme toggle (existing emoji elsewhere unchanged)
+- index.html split into index.html + app.js + style.css, served via the existing /static/ route
+- New GET /api/trips and GET /api/analytics endpoints
+
 ## 0.4.23
 - All UI text and log messages translated to English
 - HACS compatible (repository.json, hacs.json)

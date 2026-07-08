@@ -18,6 +18,18 @@ pure local viewer without any Tesla account interaction at all.
 
 ## Features
 
+- **Map-centric dashboard** — the landing page is an interactive map showing
+  GPS trip routes and event markers (grouped by location, with a
+  disambiguation popup when several clips share a spot), plus a slide-out
+  clip browser panel (Events / Trips / All Clips) with the same GPS-area
+  rectangle-selection as before
+- **Trips** — clips are grouped into drives (contiguous by a 20-minute gap
+  threshold), with distance, clip count and event counts, and a floating
+  trip card with prev/next navigation between drives
+- **Analytics tab** — storage usage per folder/vehicle, trip/clip
+  statistics, and events-by-reason / clips-by-month charts
+- **Light/dark theme toggle**, persisted, respects your OS preference on
+  first load
 - **6-camera grid player** — front, rear, left, right, pillar L/R with
   synchronised playback, seek and speed control
 - **Telemetry HUD** — speed, gear, steering wheel, accelerator bar, brake
@@ -25,10 +37,9 @@ pure local viewer without any Tesla account interaction at all.
 - **GPS map** — live track from telemetry or single-point from event.json
 - **"Nerd info" panel** — raw telemetry values + event metadata
   (trigger reason, location, camera)
-- **Clip browser** — flat chronological list, searchable, filterable by
-  driving telemetry / event, and by GPS area (marker map with rectangle
-  selection). If your `clips_subpath` contains vehicle folders (e.g.
-  `Tesla1`, `Tesla2`), clips are automatically grouped per vehicle.
+- **Clip browser** — searchable, filterable by driving telemetry / event.
+  If your `clips_subpath` contains vehicle folders (e.g. `Tesla1`,
+  `Tesla2`), clips are automatically grouped per vehicle.
 - **Per-camera fullscreen** — each video tile has a fullscreen button
 - **Thumbnail grid** — auto-generated or from Tesla's thumb.png
 - **Per-camera download** and full-clip ZIP export

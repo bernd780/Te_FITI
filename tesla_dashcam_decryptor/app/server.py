@@ -21,6 +21,8 @@ ffmpeg at the event timestamp (event.json) or ~1 s and caches it.
   POST /api/fetch             Direct API: fetch missing keys now
   POST /api/decrypt           decrypt all keyed clips now (batch)
   POST /api/telemetry_all     extract SEI telemetry for all plain clips missing it (batch)
+  GET  /api/trips             clips grouped into trips (contiguous drives per vehicle)
+  GET  /api/analytics         storage/clip/trip/event stats (cached 60s)
   POST /api/keys              FEKs (bookmarklet) -> store
   GET  /api/pending.json      items (without key) for the bookmarklet
   GET  /api/login/url         Direct API: login URL
@@ -28,7 +30,7 @@ ffmpeg at the event timestamp (event.json) or ~1 s and caches it.
   GET  /api/zip?id=           clip (decrypted) as ZIP
   GET  /media/<scanrel>       file from cache OR plain (range-capable)
 """
-import os, json, argparse, re, glob, posixpath, threading, time, base64, zipfile, hashlib, datetime
+import os, json, argparse, re, glob, posixpath, threading, time, base64, zipfile, hashlib, datetime, math
 from urllib.parse import urlparse, parse_qs
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -48,6 +50,8 @@ AUTO_DECRYPT = False
 EMBED_KEY = False
 DIRECT_API = True
 LIST_TTL = 15
+TRIP_GAP_MIN = 20     # minutes of inactivity that ends a trip
+ANALYTICS_TTL = 60
 TS_RE = re.compile(r"(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})-(.+)\.mp4$", re.I)
 CAM_NAMES = ("front", "back", "left_repeater", "right_repeater", "left_pillar", "right_pillar")
 
@@ -63,6 +67,8 @@ _thumb_job = {"running": False, "done": 0, "total": 0}
 _thumb_guard = threading.Lock()
 _tel_job = {"running": False, "done": 0, "total": 0}
 _tel_guard = threading.Lock()
+_analytics_cache = {"t": 0.0, "data": None}
+_analytics_guard = threading.Lock()
 
 # Persistent metadata cache — avoids re-reading telemetry/event JSON on every scan
 _meta_cache = {}
@@ -138,11 +144,20 @@ def _cam_state(sr, keys):
         return {"state": "locked", "url": None}
     return {"state": "plain", "url": "media/" + sr}
 
+def _haversine_km(lat1, lon1, lat2, lon2):
+    r = 6371.0088
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp = math.radians(lat2 - lat1)
+    dl = math.radians(lon2 - lon1)
+    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return r * (2 * math.atan2(math.sqrt(a), math.sqrt(1 - a)))
+
 def _compute_meta(c):
     """Expensive: reads telemetry + event JSON from disk."""
     telp = cache_abspath(_telsr(c["folder"], c["timestamp"]))
     ht = False
     gps_center = None
+    track = []
     if os.path.isfile(telp):
         try:
             tel = json.load(open(telp, encoding="utf-8"))
@@ -152,6 +167,8 @@ def _compute_meta(c):
                 avg_lat = sum(p[0] for p in gps_pts) / len(gps_pts)
                 avg_lon = sum(p[1] for p in gps_pts) / len(gps_pts)
                 gps_center = {"center_lat": avg_lat, "center_lon": avg_lon}
+                step = max(1, len(gps_pts) // 40)
+                track = gps_pts[::step]
         except Exception:
             ht = False
     ejp = os.path.join(SCAN_DIR, c["folder"], "event.json")
@@ -168,7 +185,8 @@ def _compute_meta(c):
                     gps_center = {"center_lat": lat, "center_lon": lon}
         except Exception:
             pass
-    return {"has_tel": ht, "has_event": he, "gps_bounds": gps_center, "has_data": ht or he, "reason": reason}
+    return {"has_tel": ht, "has_event": he, "gps_bounds": gps_center, "has_data": ht or he,
+            "reason": reason, "track": track}
 
 def _finalize(c):
     sts = [cm["state"] for cm in c["cameras"].values()]
@@ -177,7 +195,7 @@ def _finalize(c):
     c["playable"] = any(s in ("plain", "ready") for s in sts)
     cid = c["id"]
     cached = _meta_cache.get(cid)
-    if cached is None or "reason" not in cached:
+    if cached is None or "reason" not in cached or "track" not in cached:
         cached = _compute_meta(c)
         _meta_cache[cid] = cached
     c["has_tel"] = cached["has_tel"]
@@ -265,6 +283,106 @@ def counts(clips):
         "with_telemetry": sum(1 for c in clips if c.get("has_tel")),
         "with_data": sum(1 for c in clips if c.get("has_data")),
     }
+
+def _trip_route_and_events(clips):
+    route = []
+    events = {}
+    for c in clips:
+        track = _meta_cache.get(c["id"], {}).get("track") or []
+        if track:
+            route.extend(track)
+        elif c.get("gps_bounds"):
+            route.append([c["gps_bounds"]["center_lat"], c["gps_bounds"]["center_lon"]])
+        if c.get("has_event") and c.get("reason"):
+            events[c["reason"]] = events.get(c["reason"], 0) + 1
+    return route, events
+
+def _make_trip(vehicle, clips):
+    route, events = _trip_route_and_events(clips)
+    dist = sum(_haversine_km(*route[i], *route[i + 1]) for i in range(len(route) - 1))
+    bounds = None
+    if route:
+        lats = [p[0] for p in route]
+        lons = [p[1] for p in route]
+        bounds = {"min_lat": min(lats), "max_lat": max(lats), "min_lon": min(lons), "max_lon": max(lons)}
+    return {
+        "id": vehicle + "|" + clips[0]["timestamp"],
+        "vehicle": vehicle,
+        "start": clips[0]["timestamp"],
+        "end": clips[-1]["timestamp"],
+        "clip_ids": [c["id"] for c in clips],
+        "clip_count": len(clips),
+        "distance_km": round(dist, 2),
+        "route": route,
+        "bounds": bounds,
+        "events": events,
+        "event_total": sum(events.values()),
+    }
+
+def build_trips(clips, gap_min=TRIP_GAP_MIN):
+    """Group clips per vehicle into contiguous trips by start-timestamp gap. Newest first."""
+    by_vehicle = {}
+    for c in clips:
+        by_vehicle.setdefault(c.get("vehicle") or "", []).append(c)
+    trips = []
+    for vehicle, vclips in by_vehicle.items():
+        vclips.sort(key=lambda c: c["timestamp"])
+        group = []
+        prev_dt = None
+        for c in vclips:
+            dt = datetime.datetime.strptime(c["timestamp"], "%Y-%m-%d_%H-%M-%S")
+            if group and prev_dt and (dt - prev_dt).total_seconds() > gap_min * 60:
+                trips.append(_make_trip(vehicle, group))
+                group = []
+            group.append(c)
+            prev_dt = dt
+        if group:
+            trips.append(_make_trip(vehicle, group))
+    trips.sort(key=lambda t: t["start"], reverse=True)
+    return trips
+
+
+def compute_analytics():
+    clips = clips_cached()
+    trips = build_trips(clips)
+    by_folder = {}
+    for c in clips:
+        top = c["folder"].split("/")[0] if c["folder"] else "(root)"
+        entry = by_folder.setdefault(top, {"folder": top, "bytes": 0, "clip_count": 0})
+        entry["clip_count"] += 1
+        for cam in c["cameras"]:
+            full = resolve_media(_sr_of_cam(c["folder"], c["timestamp"], cam))
+            if full:
+                entry["bytes"] += os.path.getsize(full)
+    events_by_reason = {}
+    clips_by_month = {}
+    for c in clips:
+        if c.get("has_event") and c.get("reason"):
+            events_by_reason[c["reason"]] = events_by_reason.get(c["reason"], 0) + 1
+        m = c["timestamp"][:7]
+        clips_by_month[m] = clips_by_month.get(m, 0) + 1
+    distances = [t["distance_km"] for t in trips if t["distance_km"] > 0]
+    return {
+        "storage": {"by_folder": sorted(by_folder.values(), key=lambda x: x["folder"])},
+        "clips": counts(clips),
+        "trips": {
+            "total": len(trips),
+            "total_distance_km": round(sum(distances), 1),
+            "avg_distance_km": round(sum(distances) / len(distances), 1) if distances else 0,
+            "longest_km": round(max(distances), 1) if distances else 0,
+        },
+        "events_by_reason": events_by_reason,
+        "clips_by_month": [{"month": k, "count": v} for k, v in sorted(clips_by_month.items())],
+    }
+
+def analytics_cached():
+    now = time.time()
+    with _analytics_guard:
+        if _analytics_cache["data"] is None or now - _analytics_cache["t"] >= ANALYTICS_TTL:
+            _analytics_cache["data"] = compute_analytics()
+            _analytics_cache["t"] = now
+        return _analytics_cache["data"]
+
 
 def _get_event_data(cid):
     """Returns event.json data: seek offset, GPS, reason, etc."""
@@ -667,6 +785,10 @@ class H(BaseHTTPRequestHandler):
                 if gb:
                     pts.append([gb["center_lat"], gb["center_lon"], c["id"]])
             return self._send(200, {"points": pts})
+        if path == "/api/trips":
+            return self._send(200, build_trips(clips_cached()))
+        if path == "/api/analytics":
+            return self._send(200, analytics_cached())
         if path == "/api/pending.json":
             items = keybridge.scan_items(SRC_DIR, keystore.load(KEYS_FILE))
             return self._send(200, {"items": items}, "application/json",
