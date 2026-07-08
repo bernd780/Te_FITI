@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.6.1
+- Fix: the 0.6.0 metadata-cache upgrade (for GPS "track" data) forced a synchronous full re-scan of every historical clip's telemetry/event JSON on the first request after updating, which could hang the UI ("loading" forever) on installs with a lot of accumulated footage on a network share. GPS tracks for trip routes are now read on demand inside `/api/trips` instead of being persisted in the shared clip cache, so `/api/status`/`/api/clips` are unaffected and existing caches stay valid across the update.
+
 ## 0.6.0
 - New map-centric landing page with trip routes, event markers, and a slide-out clip browser panel (replaces the small GPS filter panel; rectangle-select-to-filter preserved on the new map)
 - Trips: clips are grouped into drives by a 20-minute gap-threshold algorithm, with distance (GPS haversine, no odometer data available) and event counts; floating trip card with prev/next navigation

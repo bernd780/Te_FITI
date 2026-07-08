@@ -157,7 +157,6 @@ def _compute_meta(c):
     telp = cache_abspath(_telsr(c["folder"], c["timestamp"]))
     ht = False
     gps_center = None
-    track = []
     if os.path.isfile(telp):
         try:
             tel = json.load(open(telp, encoding="utf-8"))
@@ -167,8 +166,6 @@ def _compute_meta(c):
                 avg_lat = sum(p[0] for p in gps_pts) / len(gps_pts)
                 avg_lon = sum(p[1] for p in gps_pts) / len(gps_pts)
                 gps_center = {"center_lat": avg_lat, "center_lon": avg_lon}
-                step = max(1, len(gps_pts) // 40)
-                track = gps_pts[::step]
         except Exception:
             ht = False
     ejp = os.path.join(SCAN_DIR, c["folder"], "event.json")
@@ -185,8 +182,7 @@ def _compute_meta(c):
                     gps_center = {"center_lat": lat, "center_lon": lon}
         except Exception:
             pass
-    return {"has_tel": ht, "has_event": he, "gps_bounds": gps_center, "has_data": ht or he,
-            "reason": reason, "track": track}
+    return {"has_tel": ht, "has_event": he, "gps_bounds": gps_center, "has_data": ht or he, "reason": reason}
 
 def _finalize(c):
     sts = [cm["state"] for cm in c["cameras"].values()]
@@ -195,7 +191,7 @@ def _finalize(c):
     c["playable"] = any(s in ("plain", "ready") for s in sts)
     cid = c["id"]
     cached = _meta_cache.get(cid)
-    if cached is None or "reason" not in cached or "track" not in cached:
+    if cached is None or "reason" not in cached:
         cached = _compute_meta(c)
         _meta_cache[cid] = cached
     c["has_tel"] = cached["has_tel"]
@@ -204,6 +200,28 @@ def _finalize(c):
     c["has_data"] = cached["has_data"]
     c["reason"] = cached.get("reason")
     return c
+
+def _clip_track(c):
+    """Decimated GPS track (<=40 pts) for a clip, read fresh from its telemetry
+    cache file. Deliberately NOT stored in the persistent _meta_cache: doing so
+    would bump the cache-sentinel check in _finalize() and force a synchronous
+    full re-scan of every historical clip's telemetry/event JSON on the very
+    first request after deploy (slow/blocking on a network-mounted NAS). Only
+    called from build_trips(), off the /api/status and /api/clips hot path."""
+    if not c.get("has_tel"):
+        return []
+    telp = cache_abspath(_telsr(c["folder"], c["timestamp"]))
+    if not os.path.isfile(telp):
+        return []
+    try:
+        tel = json.load(open(telp, encoding="utf-8"))
+        pts = [[f["lat"], f["lon"]] for f in tel.get("frames", []) if f.get("lat") and f.get("lon")]
+        if not pts:
+            return []
+        step = max(1, len(pts) // 40)
+        return pts[::step]
+    except Exception:
+        return []
 
 
 def _scan(keys=None):
@@ -288,7 +306,7 @@ def _trip_route_and_events(clips):
     route = []
     events = {}
     for c in clips:
-        track = _meta_cache.get(c["id"], {}).get("track") or []
+        track = _clip_track(c)
         if track:
             route.extend(track)
         elif c.get("gps_bounds"):
