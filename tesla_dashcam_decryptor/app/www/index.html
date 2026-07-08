@@ -18,20 +18,37 @@
   <h1>Te_FITI</h1>
   <span id="status">⏳ loading…</span>
   <nav id="tabnav">
-    <button class="tabbtn active" data-view="map">🗺️ Map</button>
+    <button class="tabbtn active" data-view="clips">🎞️ Clips</button>
+    <button class="tabbtn" data-view="map">🗺️ Map</button>
     <button class="tabbtn" data-view="analytics">📈 Analytics</button>
   </nav>
   <button class="iconbtn" id="themeToggle" title="Toggle light/dark theme"></button>
   <button class="toolbtn" id="toolsbtn">🔑 Keys</button>
 </header>
 <main>
-  <section id="view-map" class="view active">
+  <section id="view-clips" class="view active">
+    <div id="filterbar">
+      <input type="text" id="search" placeholder="Filter: date/time…">
+      <div id="filterRow">
+        <label><input type="checkbox" id="filterDrive"> 📊 Driving</label>
+        <label><input type="checkbox" id="filterEvent"> 📅 Event</label>
+        <label><input type="checkbox" id="filterHonk"> 📯 Honk</label>
+        <span id="areaChip" class="chip" style="display:none"></span>
+        <span id="tripChip" class="chip" style="display:none"></span>
+        <span id="resultCount" class="rescount"></span>
+      </div>
+    </div>
+    <div id="cliplist"></div>
+  </section>
+
+  <section id="view-map" class="view">
     <div id="landingMap"></div>
     <div id="mapToolbar">
       <button id="drawRectBtn" title="Draw rectangle to filter clips">▭ Select area</button>
       <span class="hint" id="drawHint"></span>
       <button id="filterResetBtn">↻ Reset</button>
     </div>
+    <div id="areaResult" style="display:none"></div>
     <div id="tripCard" style="display:none">
       <div class="tcHead">
         <button id="tripPrev" class="navbtn" title="Older trip">‹</button>
@@ -48,36 +65,15 @@
       </div>
       <button class="btn" id="tcViewClips">View clips</button>
     </div>
-    <button id="panelToggle" class="toolbtn" title="Browse clips">☰ Clips</button>
   </section>
 
   <section id="view-analytics" class="view">
     <div id="analyticsBody"><div class="loading">⏳ Loading analytics…</div></div>
   </section>
-
-  <aside id="browserPanel">
-    <div id="panelTabs">
-      <button class="ptab active" data-sub="events">Events</button>
-      <button class="ptab" data-sub="trips">Trips</button>
-      <button class="ptab" data-sub="clips">All Clips</button>
-      <span class="panelClose" id="panelClose">✕</span>
-    </div>
-    <div id="sub-events" class="subview active"><div id="eventList"></div></div>
-    <div id="sub-trips" class="subview"><div id="tripList"></div></div>
-    <div id="sub-clips" class="subview">
-      <div id="filterbar">
-        <input type="text" id="search" placeholder="Filter: date/time…">
-        <label><input type="checkbox" id="filterDrive"> 📊 Driving</label>
-        <label><input type="checkbox" id="filterEvent"> 📅 Event</label>
-        <label><input type="checkbox" id="filterHonk"> 📯 Honk</label>
-      </div>
-      <div id="cliplist"></div>
-    </div>
-  </aside>
 </main>
 
 <div class="player-overlay" id="playerOverlay">
-  <button class="playerClose" id="playerClose">✕ Back to map</button>
+  <button class="playerClose" id="playerClose">✕ Close</button>
   <section id="content">
     <div id="meta"></div>
     <div id="vctrl">

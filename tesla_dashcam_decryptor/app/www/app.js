@@ -58,8 +58,10 @@ function buildSidebar(){
       const hasPtInBounds = c.gps_bounds && gpsFilter.contains([c.gps_bounds.center_lat, c.gps_bounds.center_lon]);
       if(!hasPtInBounds) continue;
     }
+    if(tripFilter && !tripFilter.has(c.id)) continue;
     filtered.push(c);
   }
+  updateFilterChips(filtered.length);
   filtered.sort((a,b)=>b.timestamp.localeCompare(a.timestamp));
   const el=$("#cliplist"); el.innerHTML="";
   const vehicles=new Set(filtered.map(c=>c.vehicle).filter(Boolean));
@@ -80,6 +82,25 @@ function buildSidebar(){
   }
 }
 function markActive(id){ [...document.querySelectorAll(".cliprow")].forEach(r=>r.classList.toggle("active",r.dataset.id===id)); }
+
+// ---------- Filter chips (area / trip) + result count ----------
+let tripFilter=null; // Set of clip ids, or null
+function updateFilterChips(count){
+  const ac=$("#areaChip");
+  if(gpsFilter){ ac.style.display="inline-flex"; ac.innerHTML='📍 Area <span class="chipx" title="Clear area filter">✕</span>'; ac.querySelector(".chipx").onclick=clearAreaFilter; }
+  else ac.style.display="none";
+  const tc=$("#tripChip");
+  if(tripFilter){ tc.style.display="inline-flex"; tc.innerHTML='🚗 Trip <span class="chipx" title="Clear trip filter">✕</span>'; tc.querySelector(".chipx").onclick=clearTripFilter; }
+  else tc.style.display="none";
+  $("#resultCount").textContent=count+" clip"+(count===1?"":"s");
+}
+function clearAreaFilter(){
+  gpsFilter=null;
+  if(_drawRect&&landingMap){ landingMap.removeLayer(_drawRect); _drawRect=null; }
+  const ar=$("#areaResult"); if(ar) ar.style.display="none";
+  buildSidebar();
+}
+function clearTripFilter(){ tripFilter=null; buildSidebar(); }
 
 // ---------- Open / Playback ----------
 function clearStage(){
@@ -261,7 +282,7 @@ addEventListener("keydown",e=>{if(!master)return;
 // ---------- Landing map (trips + event markers + rectangle select) ----------
 let landingMap=null, tripLayerGroup=null, markerLayerGroup=null;
 let tripsSorted=[], currentTripIdx=-1;
-let currentView="map";
+let currentView="clips";
 let _drawMode=false, _drawRect=null, _drawStart=null;
 
 function initLandingMap(){
@@ -301,10 +322,18 @@ function wireRectSelect(map){
     gpsFilter=b;
     exitDraw();
     buildSidebar();
+    showAreaResult();
   });
-  $("#filterResetBtn").onclick=()=>{
-    gpsFilter=null; if(_drawRect){map.removeLayer(_drawRect);_drawRect=null;} exitDraw(); buildSidebar();
-  };
+  $("#filterResetBtn").onclick=()=>{ exitDraw(); clearAreaFilter(); };
+}
+
+function showAreaResult(){
+  if(!gpsFilter) return;
+  const count=allClips.filter(c=>c.gps_bounds && gpsFilter.contains([c.gps_bounds.center_lat,c.gps_bounds.center_lon])).length;
+  const el=$("#areaResult");
+  el.style.display="flex";
+  el.innerHTML=`<span>📍 ${count} clip${count===1?"":"s"} in this area</span><button class="btn" id="areaViewBtn">View list</button>`;
+  $("#areaViewBtn").onclick=()=>switchView("clips");
 }
 
 function groupMarkersByCoord(clips){
@@ -409,47 +438,21 @@ function selectTrip(idx){
   if(t.bounds && landingMap){
     landingMap.fitBounds([[t.bounds.min_lat,t.bounds.min_lon],[t.bounds.max_lat,t.bounds.max_lon]],{padding:[40,40]});
   }
-  renderTripListPanel();
 }
 function prevTrip(){ if(currentTripIdx<tripsSorted.length-1) selectTrip(currentTripIdx+1); } // older
 function nextTrip(){ if(currentTripIdx>0) selectTrip(currentTripIdx-1); } // newer
 
 async function loadTrips(){
   tripsSorted=await fetch("api/trips").then(r=>r.json()).catch(()=>[]);
-  renderTripListPanel();
   if(tripsSorted.length) selectTrip(0);
 }
 
-// ---------- Slide-out browser panel ----------
-function openPanel(sub){
-  $("#browserPanel").classList.add("open");
-  document.querySelectorAll(".ptab").forEach(b=>b.classList.toggle("active",b.dataset.sub===sub));
-  document.querySelectorAll(".subview").forEach(v=>v.classList.toggle("active",v.id==="sub-"+sub));
-}
-function closePanel(){ $("#browserPanel").classList.remove("open"); }
-
-function renderTripListPanel(){
-  const el=$("#tripList"); if(!el) return; el.innerHTML="";
-  if(!tripsSorted.length){ el.innerHTML='<div class="loading">No trips yet</div>'; return; }
-  tripsSorted.forEach((t,i)=>{
-    const row=document.createElement("div"); row.className="tripRow"+(i===currentTripIdx?" active":"");
-    row.innerHTML=`<b>${t.vehicle||"Vehicle"}</b><br>${fmtTs(t.start)}<br><span style="color:var(--muted)">📏 ${t.distance_km} km · 🎞️ ${t.clip_count}${t.event_total?(" · 📅 "+t.event_total):""}</span>`;
-    row.onclick=()=>selectTrip(i);
-    el.appendChild(row);
-  });
-}
-function renderEventListPanel(){
-  const el=$("#eventList"); if(!el) return; el.innerHTML="";
-  const evClips=allClips.filter(c=>c.has_event).sort((a,b)=>b.timestamp.localeCompare(a.timestamp));
-  if(!evClips.length){ el.innerHTML='<div class="loading">No events yet</div>'; return; }
-  for(const c of evClips) el.appendChild(_clipRow(c));
-}
-function renderTripClipsInPanel(){
+// View a trip's clips: set the trip filter and jump to the Clips list.
+function viewTripClips(){
   const t=tripsSorted[currentTripIdx]; if(!t) return;
-  openPanel("clips");
-  const ids=new Set(t.clip_ids);
-  const el=$("#cliplist"); el.innerHTML="";
-  for(const c of allClips.filter(c=>ids.has(c.id)).sort((a,b)=>b.timestamp.localeCompare(a.timestamp))) el.appendChild(_clipRow(c));
+  tripFilter=new Set(t.clip_ids);
+  buildSidebar();
+  switchView("clips");
 }
 
 // ---------- Player overlay ----------
@@ -469,7 +472,7 @@ function switchView(name){
   currentView=name;
   document.querySelectorAll(".view").forEach(v=>v.classList.toggle("active",v.id==="view-"+name));
   document.querySelectorAll(".tabbtn").forEach(b=>b.classList.toggle("active",b.dataset.view===name));
-  if(name==="map"&&landingMap) setTimeout(()=>landingMap.invalidateSize(),60);
+  if(name==="map"&&landingMap) setTimeout(()=>{ landingMap.invalidateSize(); if(currentTripIdx>=0) selectTrip(currentTripIdx); },60);
   if(name==="analytics") loadAnalytics();
 }
 function fmtBytes(b){
@@ -587,12 +590,9 @@ async function boot(){
   $("#filterHonk").onchange=buildSidebar;
 
   document.querySelectorAll(".tabbtn").forEach(b=>b.onclick=()=>switchView(b.dataset.view));
-  document.querySelectorAll(".ptab").forEach(b=>b.onclick=()=>openPanel(b.dataset.sub));
-  $("#panelToggle").onclick=()=>{ $("#browserPanel").classList.contains("open") ? closePanel() : openPanel("events"); };
-  $("#panelClose").onclick=closePanel;
   $("#tripPrev").onclick=prevTrip;
   $("#tripNext").onclick=nextTrip;
-  $("#tcViewClips").onclick=renderTripClipsInPanel;
+  $("#tcViewClips").onclick=viewTripClips;
   $("#playerClose").onclick=closePlayerOverlay;
   $("#themeToggle").onclick=toggleTheme;
   applyThemeIcon();
@@ -612,7 +612,6 @@ async function boot(){
   clearTimeout(slowHint);
   await loadClips(false);
   renderEventMarkers();
-  renderEventListPanel();
   try { await loadTrips(); } catch(e){ console.error("trips failed:", e); }
   setInterval(()=>refreshStatus().catch(()=>{}),5000);
 }

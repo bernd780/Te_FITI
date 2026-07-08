@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.0
+- The clip list is the default view again (new **Clips** tab), with **Map** and **Analytics** as secondary tabs — the map is no longer the landing page
+- Map area selection: draw a rectangle, see how many clips fall inside, and jump straight to the filtered list ("View list"). The active area filter shows as a removable chip in the Clips view
+- All filters combine: an area filter from the map plus the Driving / Event / Honk checkboxes narrow the list together, with a live result count
+- Trip card's "View clips" now filters the Clips list to that trip (removable chip) instead of a separate panel
+- Removed the slide-out browser panel (its Events/Trips/All-Clips sub-tabs are covered by the Clips list filters and the map's trip card)
+
 ## 0.6.2
 - New `debug_logging` option: verbose add-on log with per-request timing, `_scan`/`build_trips`/`compute_analytics` duration, and metadata-cache hit/miss counts (off by default; the previous silent `log_message` made incidents like 0.6.0's hang invisible in the log)
 - The web UI now flags "still loading… taking longer than expected" instead of sitting silently if the initial load takes more than 8 seconds

@@ -18,14 +18,17 @@ pure local viewer without any Tesla account interaction at all.
 
 ## Features
 
-- **Map-centric dashboard** — the landing page is an interactive map showing
-  GPS trip routes and event markers (grouped by location, with a
-  disambiguation popup when several clips share a spot), plus a slide-out
-  clip browser panel (Events / Trips / All Clips) with the same GPS-area
-  rectangle-selection as before
+- **Clip list first** — the default view is the searchable clip list, with
+  **Map** and **Analytics** as secondary tabs
+- **Map area filter** — an interactive map (GPS trip routes + event markers,
+  grouped by location with a disambiguation popup when several clips share a
+  spot). Draw a rectangle to select an area, see how many clips fall inside,
+  and jump to that filtered list. The area filter, plus the Driving / Event /
+  Honk checkboxes, all combine — with a live result count
 - **Trips** — clips are grouped into drives (contiguous by a 20-minute gap
   threshold), with distance, clip count and event counts, and a floating
-  trip card with prev/next navigation between drives
+  trip card with prev/next navigation; "View clips" filters the list to that
+  drive
 - **Analytics tab** — storage usage per folder/vehicle, trip/clip
   statistics, and events-by-reason / clips-by-month charts
 - **Light/dark theme toggle**, persisted, respects your OS preference on
