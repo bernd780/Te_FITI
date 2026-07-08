@@ -93,6 +93,7 @@ In the clip browser, encrypted clips are marked with a lock icon:
 | `enable_direct_api` | Use the Tesla API directly (requires one-time login) |
 | `key_after_decrypt` | What to do with the FEK after decryption: `hidden` (default) or `embed` |
 | `delete_originals` | Delete encrypted originals after successful decryption |
+| `debug_logging` | Verbose add-on log: per-request timing, scan/analytics duration, metadata-cache hit/miss counts. Off by default. |
 
 ## Privacy
 

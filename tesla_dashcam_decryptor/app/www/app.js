@@ -597,9 +597,19 @@ async function boot(){
   $("#themeToggle").onclick=toggleTheme;
   applyThemeIcon();
 
+  // If the very first load takes unusually long, say so instead of sitting
+  // silently on "loading" — enable debug_logging in the add-on options to
+  // see request timing / scan duration in the add-on log.
+  const slowHint=setTimeout(()=>{
+    if($("#status").textContent.includes("loading")){
+      $("#status").textContent="⏳ still loading… (taking longer than expected — check the add-on log, or enable debug_logging)";
+    }
+  },8000);
+
   // Map must init even if trips/markers fail (e.g. tile CDN blocked in ingress)
   try { initLandingMap(); } catch(e){ console.error("Landing map init failed:", e); }
   try { await refreshStatus(); } catch(e){ console.error("status failed:", e); }
+  clearTimeout(slowHint);
   await loadClips(false);
   renderEventMarkers();
   renderEventListPanel();

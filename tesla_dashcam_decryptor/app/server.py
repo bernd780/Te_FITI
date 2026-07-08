@@ -49,6 +49,7 @@ DELETE = False
 AUTO_DECRYPT = False
 EMBED_KEY = False
 DIRECT_API = True
+DEBUG = False
 LIST_TTL = 15
 TRIP_GAP_MIN = 20     # minutes of inactivity that ends a trip
 ANALYTICS_TTL = 60
@@ -69,6 +70,10 @@ _tel_job = {"running": False, "done": 0, "total": 0}
 _tel_guard = threading.Lock()
 _analytics_cache = {"t": 0.0, "data": None}
 _analytics_guard = threading.Lock()
+
+def _dbg(msg):
+    if DEBUG:
+        print(f"[debug] {msg}", flush=True)
 
 # Persistent metadata cache — avoids re-reading telemetry/event JSON on every scan
 _meta_cache = {}
@@ -225,6 +230,7 @@ def _clip_track(c):
 
 
 def _scan(keys=None):
+    t0 = time.time()
     if keys is None:
         keys = keystore.load(KEYS_FILE)
     clips = {}
@@ -244,9 +250,14 @@ def _scan(keys=None):
         c["cameras"][cam] = _cam_state(sr, keys)
         if cam == "front" and os.path.exists(cache_abspath(_telsr(folder, ts))):
             c["telemetry"] = "media/" + _telsr(folder, ts)
+    t_glob = time.time()
+    cache_misses = sum(1 for c in clips.values() if c["id"] not in _meta_cache or "reason" not in _meta_cache[c["id"]])
     out = [_finalize(c) for c in clips.values()]
     out.sort(key=lambda x: x["timestamp"], reverse=True)
     _save_meta_cache()
+    _dbg(f"_scan: {len(out)} clips (glob+state {t_glob-t0:.3f}s, "
+         f"{cache_misses} meta cache misses recomputed, finalize+save {time.time()-t_glob:.3f}s, "
+         f"total {time.time()-t0:.3f}s)")
     return out
 
 
@@ -339,6 +350,7 @@ def _make_trip(vehicle, clips):
 
 def build_trips(clips, gap_min=TRIP_GAP_MIN):
     """Group clips per vehicle into contiguous trips by start-timestamp gap. Newest first."""
+    t0 = time.time()
     by_vehicle = {}
     for c in clips:
         by_vehicle.setdefault(c.get("vehicle") or "", []).append(c)
@@ -357,10 +369,12 @@ def build_trips(clips, gap_min=TRIP_GAP_MIN):
         if group:
             trips.append(_make_trip(vehicle, group))
     trips.sort(key=lambda t: t["start"], reverse=True)
+    _dbg(f"build_trips: {len(trips)} trips from {len(clips)} clips in {time.time()-t0:.3f}s")
     return trips
 
 
 def compute_analytics():
+    t0 = time.time()
     clips = clips_cached()
     trips = build_trips(clips)
     by_folder = {}
@@ -380,6 +394,7 @@ def compute_analytics():
         m = c["timestamp"][:7]
         clips_by_month[m] = clips_by_month.get(m, 0) + 1
     distances = [t["distance_km"] for t in trips if t["distance_km"] > 0]
+    _dbg(f"compute_analytics: {len(clips)} clips, {len(trips)} trips, storage stat'd in {time.time()-t0:.3f}s total")
     return {
         "storage": {"by_folder": sorted(by_folder.values(), key=lambda x: x["folder"])},
         "clips": counts(clips),
@@ -761,7 +776,9 @@ class H(BaseHTTPRequestHandler):
         return parse_qs(urlparse(self.path).query).get(key, [""])[0]
 
     def do_GET(self):
+        self._t0 = time.time()
         path = self.path.split("?")[0]
+        _dbg(f"GET {self.path} - start")
         if path in ("/", "/index.html"):
             return self._file(os.path.join(WWW, "index.html"), "text/html",
                               {"Cache-Control": "no-cache, no-store, must-revalidate"})
@@ -855,7 +872,9 @@ class H(BaseHTTPRequestHandler):
         return self._send(404, {"error": "not found"})
 
     def do_POST(self):
+        self._t0 = time.time()
         path = self.path.split("?")[0]
+        _dbg(f"POST {self.path} - start")
         n = int(self.headers.get("Content-Length", 0) or 0)
         raw = self.rfile.read(n) if n else b"{}"
         if path == "/api/prepare":
@@ -896,8 +915,10 @@ class H(BaseHTTPRequestHandler):
                 return self._send(400, {"ok": False, "error": str(e)})
         return self._send(404, {"error": "not found"})
 
-    def log_message(self, *a):
-        pass
+    def log_message(self, fmt, *args):
+        if DEBUG:
+            dur = time.time() - getattr(self, "_t0", time.time())
+            print(f"[http] {fmt % args} ({dur:.3f}s)", flush=True)
 
 
 if __name__ == "__main__":
@@ -912,6 +933,7 @@ if __name__ == "__main__":
     p.add_argument("--no-auto-decrypt", action="store_true")
     p.add_argument("--embed-key", action="store_true")
     p.add_argument("--no-direct-api", action="store_true")
+    p.add_argument("--debug", action="store_true", help="Verbose logging: request timing, scan/analytics duration, cache hit/miss counts")
     a = p.parse_args()
     SRC_DIR = os.path.abspath(a.src)
     OUT_DIR = os.path.abspath(a.out)
@@ -925,6 +947,7 @@ if __name__ == "__main__":
     AUTO_DECRYPT = not a.no_auto_decrypt
     EMBED_KEY = a.embed_key
     DIRECT_API = not a.no_direct_api
+    DEBUG = a.debug
     auth = TeslaAuth(os.path.join(DATA_DIR, "token_store.json"))
     os.makedirs(os.path.join(OUT_DIR, ".thumbs"), exist_ok=True)
     _META_CACHE_FILE = os.path.join(DATA_DIR, ".meta_cache.json")
@@ -932,5 +955,5 @@ if __name__ == "__main__":
     threading.Thread(target=scheduler, daemon=True).start()
     print(f"Viewer :{a.port} scan={SCAN_DIR} enc={SRC_DIR} (prefix='{ENC_PREFIX}') "
           f"out={OUT_DIR} keys={KEYS_FILE} auto_decrypt={AUTO_DECRYPT} "
-          f"embed={EMBED_KEY} direct_api={DIRECT_API}", flush=True)
+          f"embed={EMBED_KEY} direct_api={DIRECT_API} debug={DEBUG}", flush=True)
     ThreadingHTTPServer(("0.0.0.0", a.port), H).serve_forever()

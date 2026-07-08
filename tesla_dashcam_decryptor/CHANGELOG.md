@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.2
+- New `debug_logging` option: verbose add-on log with per-request timing, `_scan`/`build_trips`/`compute_analytics` duration, and metadata-cache hit/miss counts (off by default; the previous silent `log_message` made incidents like 0.6.0's hang invisible in the log)
+- The web UI now flags "still loading… taking longer than expected" instead of sitting silently if the initial load takes more than 8 seconds
+
 ## 0.6.1
 - Fix: the 0.6.0 metadata-cache upgrade (for GPS "track" data) forced a synchronous full re-scan of every historical clip's telemetry/event JSON on the first request after updating, which could hang the UI ("loading" forever) on installs with a lot of accumulated footage on a network share. GPS tracks for trip routes are now read on demand inside `/api/trips` instead of being persisted in the shared clip cache, so `/api/status`/`/api/clips` are unaffected and existing caches stay valid across the update.
 

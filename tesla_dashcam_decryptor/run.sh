@@ -14,6 +14,7 @@ DELETE=$(bashio::config 'delete_originals')
 AUTO=$(bashio::config 'auto_decrypt')
 DIRECT=$(bashio::config 'enable_direct_api')
 KEYMODE=$(bashio::config 'key_after_decrypt')
+DEBUG=$(bashio::config 'debug_logging')
 VERS="3.0"
 if bashio::config.has_value 'smb_version'; then VERS=$(bashio::config 'smb_version'); fi
 
@@ -59,6 +60,7 @@ FLAGS=""
 [ "${AUTO}" != "true" ] && FLAGS="${FLAGS} --no-auto-decrypt"
 [ "${DIRECT}" != "true" ] && FLAGS="${FLAGS} --no-direct-api"
 [ "${KEYMODE}" = "embed" ] && FLAGS="${FLAGS} --embed-key"
+[ "${DEBUG}" = "true" ] && FLAGS="${FLAGS} --debug"
 
 trap 'umount "${MNT}" 2>/dev/null || true' EXIT INT TERM
 
