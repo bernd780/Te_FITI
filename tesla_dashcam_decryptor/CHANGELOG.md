@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.11
+- **Fix: the rectangle area selection on the map could not be drawn.** Marker icons and trip polylines are separate DOM elements sitting above the map and they swallow `mousedown`, so a drag that began on one never reached the map at all — and since 0.7.10 frames the view tightly on the events, almost every drag started on a marker. Markers and paths are now made click-through for the duration of the drag and the cursor turns into a crosshair
+- **Shift+drag** now selects an area without arming the button first, and the toolbar says so. The button was the only way in and nothing on the map suggested it had to be pressed
+- Releasing the mouse outside the map no longer leaves a half-drawn rectangle with the map stuck in selection mode
+- A click without dragging no longer leaves a stray rectangle behind; it simply does nothing, and the tool stays armed for another attempt
+
 ## 0.7.10
 - New **"Delete originals of already-decrypted clips"** button. `delete_originals` only ever applied at the moment a clip was decrypted, so every clip decrypted before 0.7.8 (when the option did nothing at all) still had its encrypted original on the NAS — on this library 157 GB of them. The button reports how many files and roughly how much space before asking, shows a progress bar, and can be cancelled. It only appears when `delete_originals` is on
 - Safety: an original is deleted only when its decrypted copy is present and non-empty, checked immediately before each removal. Candidates come from the index, so building the list costs no NAS access

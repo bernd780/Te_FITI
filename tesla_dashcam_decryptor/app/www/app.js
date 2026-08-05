@@ -394,6 +394,7 @@ let landingMap=null, tripLayerGroup=null, markerLayerGroup=null;
 let tripsSorted=[], currentTripIdx=-1;
 let currentView="clips";
 let _drawMode=false, _drawRect=null, _drawStart=null;
+const DRAW_TIP="tip: shift+drag on the map";
 
 function initLandingMap(){
   if(landingMap||!window.L) return landingMap;
@@ -409,30 +410,66 @@ function initLandingMap(){
 }
 
 function wireRectSelect(map){
-  function enterDraw(){ _drawMode=true; map.dragging.disable(); $("#drawRectBtn").classList.add("active"); $("#drawHint").textContent="Click & drag to select area"; }
-  function exitDraw(){ _drawMode=false; map.dragging.enable(); $("#drawRectBtn").classList.remove("active"); $("#drawHint").textContent=""; }
+  const container=map.getContainer();
+  function enterDraw(){
+    _drawMode=true; map.dragging.disable();
+    // Markers are their own DOM elements sitting on top of the map and they
+    // swallow mousedown, so a drag starting on one never reached the map at
+    // all. Turning off their pointer events for the duration of the drag is
+    // what makes the selection reliably drawable.
+    container.classList.add("drawing");
+    $("#drawRectBtn").classList.add("active");
+    $("#drawHint").textContent="Click & drag to select an area";
+  }
+  function exitDraw(){
+    _drawMode=false; map.dragging.enable();
+    container.classList.remove("drawing");
+    $("#drawRectBtn").classList.remove("active");
+    $("#drawHint").textContent=DRAW_TIP;   // restore, not clear: the hint is how
+  }                                        // anyone learns shift+drag exists
   $("#drawRectBtn").onclick=()=>{ _drawMode ? exitDraw() : enterDraw(); };
-  map.on("mousedown",e=>{
-    if(!_drawMode) return;
-    _drawStart=e.latlng;
+
+  function begin(latlng){
+    _drawStart=latlng;
     if(_drawRect){ map.removeLayer(_drawRect); _drawRect=null; }
-  });
-  map.on("mousemove",e=>{
-    if(!_drawMode||!_drawStart) return;
-    const b=L.latLngBounds(_drawStart,e.latlng);
+  }
+  function extend(latlng){
+    if(!_drawStart) return;
+    const b=L.latLngBounds(_drawStart,latlng);
     if(_drawRect) _drawRect.setBounds(b);
-    else { _drawRect=L.rectangle(b,{color:"#3b82f6",weight:2,fillOpacity:0.15}).addTo(map); }
-  });
-  map.on("mouseup",e=>{
-    if(!_drawMode||!_drawStart) return;
-    const b=L.latLngBounds(_drawStart,e.latlng);
+    else _drawRect=L.rectangle(b,{color:"#3b82f6",weight:2,fillOpacity:0.15}).addTo(map);
+  }
+  function finish(latlng){
+    if(!_drawStart) return;
+    const b=L.latLngBounds(_drawStart,latlng);
     _drawStart=null;
-    if(b.getNorthEast().equals(b.getSouthWest())) return;
+    // A click without movement is not a selection — leave everything as it was
+    // instead of applying an empty filter.
+    if(b.getNorthEast().equals(b.getSouthWest())){
+      if(_drawRect){ map.removeLayer(_drawRect); _drawRect=null; }
+      return;
+    }
     if(_drawRect) _drawRect.setBounds(b);
     gpsFilter=b;
     exitDraw();
     buildSidebar();
     showAreaResult();
+  }
+
+  map.on("mousedown",e=>{
+    // Shift+drag selects without arming the button first — the button was the
+    // only way in, and nothing on the map hinted that it had to be pressed.
+    if(!_drawMode && e.originalEvent && e.originalEvent.shiftKey) enterDraw();
+    if(_drawMode) begin(e.latlng);
+  });
+  map.on("mousemove",e=>{ if(_drawMode) extend(e.latlng); });
+  map.on("mouseup",e=>{ if(_drawMode) finish(e.latlng); });
+  // Releasing outside the map would otherwise leave a half-drawn rectangle and
+  // the map stuck in draw mode.
+  window.addEventListener("mouseup",e=>{
+    if(!_drawMode||!_drawStart) return;
+    if(container.contains(e.target)) return;      // handled by the map above
+    finish(map.mouseEventToLatLng(e));
   });
   // Reset also frames all events again, so there is always a way back to the
   // overview after zooming into a trip or a selection.
