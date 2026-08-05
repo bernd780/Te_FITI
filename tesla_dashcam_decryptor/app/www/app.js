@@ -306,7 +306,13 @@ function updateTelControls(){
   if(!hasGps){ $("#map").style.display="none"; $("#t_map").checked=false; }
 }
 const CAM_LABELS=["Front","Rear","Left","Right","Pillar L","Pillar R"];
-const REASON_LABELS={"sentry_aware_object_detection":"Object detected (Sentry)","sentry_aware_accel":"Acceleration (Sentry)","user_interaction_dashcam_icon_tapped":"Manual save","user_interaction_honk":"Honk","sentry_aware_intrusion":"Intrusion (Sentry)"};
+const REASON_LABELS={"sentry_aware_object_detection":"Object detected (Sentry)","sentry_aware_accel":"Acceleration (Sentry)","user_interaction_dashcam_icon_tapped":"Manual save","user_interaction_honk":"Honk","sentry_aware_intrusion":"Intrusion (Sentry)","sentry_locked_handle_pulled":"Door handle pulled (Sentry)","vehicle_auto_emergency_braking":"Emergency braking","user_interaction_dashcam_launcher_action_tapped":"Manual save (launcher)","user_interaction_dashcam_panel_save":"Manual save (panel)"};
+// The server splits a measured magnitude off the reason (accelerometer
+// triggers carry one), so the label matches and the value is shown alongside.
+function reasonLabel(reason,value){
+  const l=REASON_LABELS[reason]||reason;
+  return (value==null)?l:`${l} (${(+value).toFixed(2)})`;
+}
 function nerd(f){
   const bl=((f.blink_l?"◀":"")+(f.blink_r?"▶":""))||"–";
   let lines=[
@@ -321,7 +327,7 @@ function nerd(f){
 function eventNerdLines(){
   if(!curEvent) return [];
   const e=curEvent, lines=[];
-  if(e.reason) lines.push("Reason: "+(REASON_LABELS[e.reason]||e.reason));
+  if(e.reason) lines.push("Reason: "+reasonLabel(e.reason,e.reason_value));
   if(e.city||e.street) lines.push("Location: "+[e.street,e.city].filter(Boolean).join(", "));
   if(e.lat&&e.lon) lines.push("GPS: "+e.lat+", "+e.lon);
   if(e.camera!=null) lines.push("Camera: "+(CAM_LABELS[+e.camera]||e.camera));
@@ -462,7 +468,7 @@ function renderEventMarkers(){
 
 function showDisambiguation(marker,list){
   const rows=list.slice().sort((a,b)=>b.timestamp.localeCompare(a.timestamp)).map(c=>
-    `<div class="popRow" data-id="${c.id}"><img src="api/thumb?id=${encodeURIComponent(c.id)}" onerror="this.style.visibility='hidden'"><span>${c.timestamp.replace("_"," ")}${c.reason?" · "+(REASON_LABELS[c.reason]||c.reason):""}</span></div>`
+    `<div class="popRow" data-id="${c.id}"><img src="api/thumb?id=${encodeURIComponent(c.id)}" onerror="this.style.visibility='hidden'"><span>${c.timestamp.replace("_"," ")}${c.reason?" · "+reasonLabel(c.reason,c.reason_value):""}</span></div>`
   ).join("");
   L.popup({maxWidth:260}).setLatLng(marker.getLatLng()).setContent(`<div class="popList">${rows}</div>`).openOn(landingMap);
   setTimeout(()=>{
@@ -580,7 +586,7 @@ async function loadAnalytics(){
   const reasons=Object.entries(a.events_by_reason).sort((x,y)=>y[1]-x[1]);
   const maxEv=Math.max(1,...reasons.map(r=>r[1]));
   const eventsHtml=reasons.length?`<h3>Events by reason</h3><div class="barList">${
-    reasons.map(([r,n])=>`<div class="barRow"><span class="barLbl">${REASON_LABELS[r]||r}</span><div class="barTrack"><div class="barFill" style="width:${(n/maxEv*100).toFixed(1)}%;background:var(--warn)"></div></div><span class="barVal">${n}</span></div>`).join("")
+    reasons.map(([r,n])=>`<div class="barRow"><span class="barLbl">${REASON_LABELS[r]||r}</span><!-- grouped server-side; the magnitude is split off the reason --><div class="barTrack"><div class="barFill" style="width:${(n/maxEv*100).toFixed(1)}%;background:var(--warn)"></div></div><span class="barVal">${n}</span></div>`).join("")
   }</div>`:"";
 
   const months=a.clips_by_month;

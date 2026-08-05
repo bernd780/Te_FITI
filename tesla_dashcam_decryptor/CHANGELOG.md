@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.6
+- Fix: the Analytics trip statistics read `0 trips` even when the Map showed plenty. `compute_analytics()` used the non-blocking `trips_cached()`, which answers empty while its own build is running, and that empty answer was then frozen into the analytics cache for a full TTL. Analytics already runs on a background thread, so it now computes the trips itself when the cache is not current
+- Fix: Tesla appends the measured magnitude to some trigger reasons (`sentry_aware_accel_0.469145`). Because the number was part of the string, every measurement counted as its own category — a real library showed **14 near-identical rows** of 2–4 events each in the events-by-reason chart instead of one bucket. The magnitude is now split off and reported separately as `reason_value`
+- The same suffix meant the UI's label lookup never matched: `REASON_LABELS` is keyed on the bare `sentry_aware_accel`, so the raw string was shown everywhere. Labels now resolve, with the measured value appended, and the labels for door-handle, emergency-braking and the two other manual-save reasons were filled in
+
 ## 0.7.5
 - Fix: `/api/trips` and `/api/analytics` blocked the request while they were built. On a 3,431-clip library the first `/api/trips` ran for **over 15 minutes** — it reads the telemetry JSON of every clip with GPS data — and `/api/analytics` for **122 seconds**, since it stats all 13,641 camera files. Long enough that the Map and Analytics tabs simply timed out. Both now build in the background with the same stale-while-revalidate contract the clip list already had, and `/api/status` reports `building.trips` / `building.analytics` so the UI reloads them the moment they are ready
 - Fix: both caches could be built from the *empty* clip list of a cold start and then serve that for a whole TTL — which is why Analytics showed all zeros right after a first index. Nothing derived is computed until the index exists, and finishing a scan now expires them. `invalidate()` expires analytics too; it previously only expired trips

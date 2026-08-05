@@ -337,6 +337,30 @@ def _compute_meta(c, out_files=None, src_files=None):
             pass
     return {"has_tel": ht, "has_event": he, "gps_bounds": gps_center, "has_data": ht or he, "reason": reason}
 
+_REASON_VALUE_RE = re.compile(r"^(.*?)_(\d+(?:\.\d+)?)$")
+
+def _split_reason(reason):
+    """Tesla appends the measured magnitude to some trigger reasons, e.g.
+    'sentry_aware_accel_0.469145'. Split it into (category, value) so events
+    group into one bucket instead of one per distinct float — otherwise the
+    events-by-reason chart shows a separate row per measurement, and the UI's
+    label lookup (keyed on the bare 'sentry_aware_accel') never matches.
+
+    Applied on read rather than stored in _meta_cache: adding a key there would
+    trip the cache sentinel in _finalize() and force a full re-read of every
+    clip's metadata off the NAS on the first request after updating.
+    """
+    if not reason:
+        return reason, None
+    m = _REASON_VALUE_RE.match(reason)
+    if not m:
+        return reason, None
+    try:
+        return m.group(1), float(m.group(2))
+    except ValueError:
+        return reason, None
+
+
 def _finalize(c, out_files=None, src_files=None):
     sts = [cm["state"] for cm in c["cameras"].values()]
     c["needs_prepare"] = "key" in sts
@@ -351,7 +375,7 @@ def _finalize(c, out_files=None, src_files=None):
     c["has_event"] = cached["has_event"]
     c["gps_bounds"] = cached.get("gps_bounds")
     c["has_data"] = cached["has_data"]
-    c["reason"] = cached.get("reason")
+    c["reason"], c["reason_value"] = _split_reason(cached.get("reason"))
     return c
 
 def _clip_track(c):
@@ -689,10 +713,25 @@ def _file_size(sr):
     return size
 
 
+def _trips_for_analytics():
+    """Trips from cache when they are current, otherwise computed right here.
+
+    compute_analytics() only ever runs on a derived-cache background thread, so
+    blocking is fine — and necessary: trips_cached() is non-blocking and answers
+    empty while its own build is still running, which would freeze zeros into
+    the trip statistics for a whole analytics TTL.
+    """
+    with _derived_guard:
+        data = _trips_cache["data"]
+        if data is not None and time.time() - _trips_cache["t"] < LIST_TTL:
+            return data
+    return build_trips(clips_cached())
+
+
 def compute_analytics():
     t0 = time.time()
     clips = clips_cached()
-    trips = trips_cached()
+    trips = _trips_for_analytics()
     sizes_before = len(_size_cache)
     by_folder = {}
     for c in clips:
@@ -763,7 +802,9 @@ def _get_event_data(cid):
             result["lat"] = lat
             result["lon"] = lon
         if ev.get("reason"):
-            result["reason"] = ev["reason"]
+            result["reason"], val = _split_reason(ev["reason"])
+            if val is not None:
+                result["reason_value"] = val
         if ev.get("city"):
             result["city"] = ev["city"]
         if ev.get("street"):
