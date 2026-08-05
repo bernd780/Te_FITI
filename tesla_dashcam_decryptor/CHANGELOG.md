@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.5
+- Fix: `/api/trips` and `/api/analytics` blocked the request while they were built. On a 3,431-clip library the first `/api/trips` ran for **over 15 minutes** — it reads the telemetry JSON of every clip with GPS data — and `/api/analytics` for **122 seconds**, since it stats all 13,641 camera files. Long enough that the Map and Analytics tabs simply timed out. Both now build in the background with the same stale-while-revalidate contract the clip list already had, and `/api/status` reports `building.trips` / `building.analytics` so the UI reloads them the moment they are ready
+- Fix: both caches could be built from the *empty* clip list of a cold start and then serve that for a whole TTL — which is why Analytics showed all zeros right after a first index. Nothing derived is computed until the index exists, and finishing a scan now expires them. `invalidate()` expires analytics too; it previously only expired trips
+- A failed build no longer leaves the builder marked as running, so a transient NAS error cannot wedge trips or analytics until the add-on is restarted
+- Analytics answers with `pending: true` while it is being built, and the tab explains what is happening instead of showing zeros
+
 ## 0.7.4
 - The first index now reads **one file per clip instead of six**. A clip's six camera files are written by the car in a single pass and always share an encryption state, so probing one and applying the answer to the rest cuts NAS round trips by 6x — which is what actually decides how long indexing takes
 - Reverts the parallel probing added in 0.7.3 to a single reader. Measured on a real SMB share it made things *worse*, not better: 8 parallel readers managed 5.0 files/s where a single one managed 8.3 — the mount serialises the requests and the extra concurrency only adds contention. (The 0.7.3 benchmark that suggested an 8x speedup used a simulated delay, which parallelises perfectly and real CIFS round trips do not.) `ENC_WORKERS` remains available for shares that do benefit, defaulting to 1

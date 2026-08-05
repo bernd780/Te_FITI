@@ -74,9 +74,10 @@ _thumb_guard = threading.Lock()
 _tel_job = {"running": False, "done": 0, "total": 0}
 _tel_guard = threading.Lock()
 _analytics_cache = {"t": 0.0, "data": None}
-_analytics_guard = threading.Lock()
 _trips_cache = {"t": 0.0, "data": None}
-_trips_guard = threading.Lock()
+# Guards both derived caches and the set of builds currently in flight.
+_derived_guard = threading.Lock()
+_derived_running = set()
 _rescan_running = False
 _rescan_guard = threading.Lock()
 # Serialises _scan() itself. _rescan_async() is single-flight, but the scheduler
@@ -487,6 +488,10 @@ def _rescan_async():
             with _lcache_guard:
                 _lcache["data"] = data
                 _lcache["t"] = time.time()
+            # The clip list just changed underneath trips/analytics — without
+            # this they keep serving whatever they were built from, which on a
+            # cold start is an empty list and reads as "0 clips, 0 trips".
+            _derived_expire()
         except Exception as e:
             print("[scan]", e, flush=True)
         finally:
@@ -511,7 +516,7 @@ def clips_cached():
 
 def invalidate(clip_id=None):
     _lcache["t"] = 0.0
-    _trips_cache["t"] = 0.0
+    _derived_expire()
     if clip_id:
         _meta_cache.pop(clip_id, None)
         _track_cache.pop(clip_id, None)
@@ -622,13 +627,54 @@ def build_trips(clips, gap_min=TRIP_GAP_MIN):
     return trips
 
 
-def trips_cached():
+def _derived_cached(name, cache, ttl, build):
+    """Stale-while-revalidate for data derived from the clip list, with the same
+    contract as clips_cached(): a request is never blocked by a build.
+
+    The first build of either is expensive on a large library — trips reads the
+    telemetry JSON of every clip with GPS data, analytics stats every camera
+    file — and both were measured in the *minutes* on a NAS-backed share while
+    holding the request open. They now fill their caches in the background.
+
+    Nothing is built until the index exists: computing from the empty list of a
+    cold start is what used to poison these caches with zeros for a whole TTL.
+    """
     now = time.time()
-    with _trips_guard:
-        if _trips_cache["data"] is None or now - _trips_cache["t"] >= LIST_TTL:
-            _trips_cache["data"] = build_trips(clips_cached())
-            _trips_cache["t"] = now
-        return _trips_cache["data"]
+    with _derived_guard:
+        data = cache["data"]
+        if data is not None and now - cache["t"] < ttl:
+            return data
+        if _lcache["data"] is None or name in _derived_running:
+            return data                      # no index yet, or already building
+        _derived_running.add(name)
+
+    def work():
+        try:
+            result = build()
+            with _derived_guard:
+                cache["data"] = result
+                cache["t"] = time.time()
+        except Exception as e:
+            print(f"[{name}]", e, flush=True)
+        finally:
+            with _derived_guard:
+                _derived_running.discard(name)
+
+    threading.Thread(target=work, daemon=True).start()
+    return data
+
+
+def _derived_expire():
+    """Mark trips/analytics as stale after the clip list changed. Keeps the last
+    good values so they are still served while the refresh runs."""
+    with _derived_guard:
+        _trips_cache["t"] = 0.0
+        _analytics_cache["t"] = 0.0
+
+
+def trips_cached():
+    return _derived_cached("trips", _trips_cache, LIST_TTL,
+                           lambda: build_trips(clips_cached())) or []
 
 
 def _file_size(sr):
@@ -677,15 +723,20 @@ def compute_analytics():
         },
         "events_by_reason": events_by_reason,
         "clips_by_month": [{"month": k, "count": v} for k, v in sorted(clips_by_month.items())],
+        "pending": False,
     }
 
+def _analytics_pending():
+    """Shape the UI can render while the real numbers are still being built."""
+    return {"storage": {"by_folder": []}, "clips": counts([]),
+            "trips": {"total": 0, "total_distance_km": 0, "avg_distance_km": 0,
+                      "longest_km": 0},
+            "events_by_reason": {}, "clips_by_month": [], "pending": True}
+
+
 def analytics_cached():
-    now = time.time()
-    with _analytics_guard:
-        if _analytics_cache["data"] is None or now - _analytics_cache["t"] >= ANALYTICS_TTL:
-            _analytics_cache["data"] = compute_analytics()
-            _analytics_cache["t"] = now
-        return _analytics_cache["data"]
+    return _derived_cached("analytics", _analytics_cache, ANALYTICS_TTL,
+                           compute_analytics) or _analytics_pending()
 
 
 def _get_event_data(cid):
@@ -1095,6 +1146,9 @@ class H(BaseHTTPRequestHandler):
             # False until the first scan has produced a list — lets the UI tell
             # "still indexing" apart from "genuinely no clips on the share"
             st["ready"] = _lcache["data"] is not None
+            with _derived_guard:
+                st["building"] = {"trips": "trips" in _derived_running,
+                                  "analytics": "analytics" in _derived_running}
             return self._send(200, st)
         if path == "/api/clips":
             return self._send(200, clips_cached())

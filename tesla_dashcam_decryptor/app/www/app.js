@@ -52,11 +52,23 @@ function renderScanBar(s){
   return show;
 }
 
+// Trips and analytics are built in the background too — the first build on a
+// large library takes minutes. Reload each as soon as its build finishes.
+let _wasBuilding={trips:false,analytics:false};
+function trackDerivedBuilds(s){
+  const b=(s&&s.building)||{};
+  if(_wasBuilding.trips&&!b.trips) loadTrips().catch(()=>{});
+  if(_wasBuilding.analytics&&!b.analytics&&currentView==="analytics") loadAnalytics();
+  _wasBuilding={trips:!!b.trips,analytics:!!b.analytics};
+  return b;
+}
+
 // ---------- Status ----------
 async function refreshStatus(){
   try{
     const s=await fetch("api/status").then(r=>r.json());
     renderScanBar(s);
+    trackDerivedBuilds(s);
     if(s.ready===false&&!$("#cliplist").querySelector(".cliprow")){
       $("#cliplist").innerHTML='<div class="loading">⏳ Building the clip index — the list appears as soon as it is done.</div>';
     }
@@ -548,6 +560,10 @@ async function loadAnalytics(){
   el.innerHTML='<div class="loading">⏳ Loading analytics…</div>';
   const a=await fetch("api/analytics").then(r=>r.json()).catch(()=>null);
   if(!a){ el.innerHTML='<div class="loading">Failed to load analytics.</div>'; return; }
+  if(a.pending){
+    el.innerHTML='<div class="loading">⏳ Building the statistics — this reads the size of every clip once and can take a few minutes on a network share. They appear here automatically.</div>';
+    return;
+  }
 
   const c=a.clips, t=a.trips;
   const tiles=[
