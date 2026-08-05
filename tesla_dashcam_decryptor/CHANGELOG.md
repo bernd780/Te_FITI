@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.9
+- **The segment in which an event actually happened is now marked.** Tesla stores one `event.json` per folder but the footage as one-minute segments, so all four (or eleven) rows of an event carried the same 📅 with nothing to say where the door handle was pulled. The triggering segment gets a 🎯 badge, a highlighted row and a tooltip with the offset ("The event happens in this clip at 0:13"); the surrounding segments keep 📅 with "the trigger is in another segment"
+- The trigger is matched to the last segment starting at or before the event, so it stays correct whether segments are 60 or 61 seconds apart and regardless of how short the final one is
+- `event.json` is read once per folder per scan instead of once per segment — on this library that is 576 reads instead of 2,370
+- This adds `event_ts` to the metadata cache, so the first scan after updating recomputes the metadata of clips that have an event. It runs in the background with the progress bar; the clip list stays usable throughout
+
 ## 0.7.8
 - **Fix: `delete_originals` never did anything.** The option was read from the config, passed to `run.sh` and printed in the log, but `server.py` only ever assigned `DELETE` and never used it — the sole code path honouring it lives in `pipeline.decrypt_pending()`, which is called exclusively from the unused legacy CLI `main.py`. Encrypted originals were therefore kept forever no matter what the option said. It now works, with guards: an original is removed only after the decrypt returned without raising *and* the decrypted output exists and is non-empty
 - **New "Decrypt everything" button** in the Keys panel. `POST /api/decrypt` existed but no UI element ever called it, so the only way to decrypt was one clip at a time from the player. The button shows a progress bar, reports failures, and when `delete_originals` is on it names the consequence and asks for confirmation first — the originals cannot be recovered afterwards

@@ -106,8 +106,14 @@ function _lockBadge(c){
   return _lockSvg("#9aa7b4","encrypted – no key");
 }
 function _clipRow(c){
-  const r=document.createElement("div"); r.className="cliprow"+(c.id===activeId?" active":""); r.dataset.id=c.id;
-  const badges=(c.has_tel?'<span title="Telemetry/HUD available">📊</span>':"")+(c.has_event?'<span title="Event present – player jumps to event">📅</span>':"")+_lockBadge(c);
+  const r=document.createElement("div"); r.className="cliprow"+(c.id===activeId?" active":"")+(c.is_trigger?" trigger":""); r.dataset.id=c.id;
+  // Every segment of an event folder carries 📅, but only one of them contains
+  // the moment the event fired — that one gets 🎯 and a highlight.
+  const at=(c.event_at!=null)?` at ${Math.floor(c.event_at/60)}:${String(Math.round(c.event_at%60)).padStart(2,"0")}`:"";
+  const evBadge=c.is_trigger
+    ? `<span class="trigBadge" title="The event happens in this clip${at}">🎯</span>`
+    : (c.has_event?'<span title="Part of an event – the trigger is in another segment">📅</span>':"");
+  const badges=(c.has_tel?'<span title="Telemetry/HUD available">📊</span>':"")+evBadge+_lockBadge(c);
   const tm=c.timestamp.replace("_"," ").replace(/-/g,(m,i)=>i>9?":":"-");
   r.innerHTML=`<img class="thumb" loading="lazy" src="api/thumb?id=${encodeURIComponent(c.id)}" onerror="this.classList.add('noimg');this.removeAttribute('src')"><span class="cmid"><span class="cliptime">${tm}</span><span class="badges">${badges}</span></span>`;
   r.onclick=()=>openPlayerOverlay(c);

@@ -168,3 +168,12 @@ input[type=text]{flex:1;min-width:240px;background:#0e1318;border:1px solid var(
   transition:background .12s ease}
 .barRow.clickable:hover{background:var(--panel2)}
 .barRow.clickable:hover .barLbl{color:var(--accent)}
+
+/* ---------- Trigger segment ---------- */
+/* One segment of an event folder holds the actual trigger; the others are just
+   the rolling buffer around it. */
+.cliprow.trigger{background:color-mix(in srgb, var(--warn) 12%, transparent);
+  box-shadow:inset 3px 0 0 var(--warn)}
+.cliprow.trigger .cliptime{font-weight:600}
+.cliprow.trigger:hover{background:color-mix(in srgb, var(--warn) 20%, transparent)}
+.trigBadge{filter:saturate(1.3)}

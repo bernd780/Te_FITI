@@ -315,7 +315,21 @@ def _haversine_km(lat1, lon1, lat2, lon2):
     a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
     return r * (2 * math.atan2(math.sqrt(a), math.sqrt(1 - a)))
 
-def _compute_meta(c, out_files=None, src_files=None):
+def _read_event_json(path, cache=None):
+    """event.json for a folder. One file is shared by all of a clip's one-minute
+    segments, so within a scan it is read once per folder rather than per clip."""
+    if cache is not None and path in cache:
+        return cache[path]
+    try:
+        ev = json.load(open(path, encoding="utf-8"))
+    except Exception:
+        ev = {}
+    if cache is not None:
+        cache[path] = ev
+    return ev
+
+
+def _compute_meta(c, out_files=None, src_files=None, ev_cache=None):
     """Expensive: reads telemetry + event JSON from disk. Only ever runs for
     clips missing from _meta_cache; the pre-walked sets spare it two SMB stats."""
     telsr = _telsr(c["folder"], c["timestamp"])
@@ -340,10 +354,12 @@ def _compute_meta(c, out_files=None, src_files=None):
     # stays in the source folder and this lookup keeps working.
     he = ejsr in src_files if src_files is not None else os.path.isfile(ejp)
     reason = None
+    event_ts = None
     if he:
         try:
-            ev = json.load(open(ejp, encoding="utf-8"))
+            ev = _read_event_json(ejp, ev_cache)
             reason = ev.get("reason") or None
+            event_ts = ev.get("timestamp") or None
             if not gps_center:
                 lat = float(ev.get("est_lat") or ev.get("lat") or 0)
                 lon = float(ev.get("est_lon") or ev.get("lon") or 0)
@@ -351,7 +367,8 @@ def _compute_meta(c, out_files=None, src_files=None):
                     gps_center = {"center_lat": lat, "center_lon": lon}
         except Exception:
             pass
-    return {"has_tel": ht, "has_event": he, "gps_bounds": gps_center, "has_data": ht or he, "reason": reason}
+    return {"has_tel": ht, "has_event": he, "gps_bounds": gps_center,
+            "has_data": ht or he, "reason": reason, "event_ts": event_ts}
 
 _REASON_VALUE_RE = re.compile(r"^(.*?)_(\d+(?:\.\d+)?)$")
 
@@ -377,22 +394,61 @@ def _split_reason(reason):
         return reason, None
 
 
-def _finalize(c, out_files=None, src_files=None):
+def _finalize(c, out_files=None, src_files=None, ev_cache=None):
     sts = [cm["state"] for cm in c["cameras"].values()]
     c["needs_prepare"] = "key" in sts
     c["has_locked"] = "locked" in sts
     c["playable"] = any(s in ("plain", "ready") for s in sts)
     cid = c["id"]
     cached = _meta_cache.get(cid)
-    if cached is None or "reason" not in cached:
-        cached = _compute_meta(c, out_files, src_files)
+    # "event_ts" is the cache sentinel: entries written before it existed are
+    # recomputed once so the trigger segment can be identified.
+    if cached is None or "event_ts" not in cached:
+        cached = _compute_meta(c, out_files, src_files, ev_cache)
         _meta_cache[cid] = cached
     c["has_tel"] = cached["has_tel"]
     c["has_event"] = cached["has_event"]
     c["gps_bounds"] = cached.get("gps_bounds")
     c["has_data"] = cached["has_data"]
     c["reason"], c["reason_value"] = _split_reason(cached.get("reason"))
+    c["event_ts"] = cached.get("event_ts")
     return c
+
+
+def _mark_trigger_segments(clips):
+    """Flag the one segment of each event folder in which the trigger actually
+    happened.
+
+    Tesla writes one event.json per folder but the rolling buffer as one-minute
+    segments, so every segment inherits the event and the list showed four (or
+    eleven) identically flagged rows with no way to tell where the door handle
+    was actually pulled. The trigger belongs to the last segment that starts at
+    or before it — robust to segments being 60 or 61 s apart, and to the final
+    segment being short.
+    """
+    by_folder = {}
+    for c in clips:
+        if c.get("has_event") and c.get("event_ts"):
+            by_folder.setdefault(c["folder"], []).append(c)
+    for group in by_folder.values():
+        try:
+            ev_dt = datetime.datetime.strptime(group[0]["event_ts"][:19], "%Y-%m-%dT%H:%M:%S")
+        except Exception:
+            continue
+        best, best_off = None, None
+        for c in group:
+            try:
+                start = datetime.datetime.strptime(c["timestamp"], "%Y-%m-%d_%H-%M-%S")
+            except ValueError:
+                continue
+            off = (ev_dt - start).total_seconds()
+            if off < 0:
+                continue                      # segment starts after the trigger
+            if best_off is None or off < best_off:
+                best, best_off = c, off
+        if best is not None and best_off is not None and best_off <= 3600:
+            best["is_trigger"] = True
+            best["event_at"] = round(best_off, 1)
 
 def _clip_track(c):
     """Decimated GPS track (<=40 pts) for a clip, from its telemetry file.
@@ -501,10 +557,12 @@ def _scan_locked(keys=None):
         _scan_job.update({"phase": "meta", "done": 0, "total": len(clips),
                           "clips": len(clips), "new": meta_misses})
         out = []
+        ev_cache = {}          # event.json read once per folder, not per segment
         for i, c in enumerate(clips.values()):
-            out.append(_finalize(c, out_files, src_files))
+            out.append(_finalize(c, out_files, src_files, ev_cache))
             if not i % 25:
                 _scan_job["done"] = i
+        _mark_trigger_segments(out)
         # id as tie-breaker: src_files is a set, so equal timestamps in different
         # folders would otherwise reshuffle the list between scans
         out.sort(key=lambda x: (x["timestamp"], x["id"]), reverse=True)
