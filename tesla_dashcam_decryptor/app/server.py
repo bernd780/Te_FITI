@@ -50,9 +50,9 @@ AUTO_DECRYPT = False
 EMBED_KEY = False
 DIRECT_API = True
 DEBUG = False
-LIST_TTL = 15
+LIST_TTL = 120
 TRIP_GAP_MIN = 20     # minutes of inactivity that ends a trip
-ANALYTICS_TTL = 60
+ANALYTICS_TTL = 300
 TS_RE = re.compile(r"(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})-(.+)\.mp4$", re.I)
 CAM_NAMES = ("front", "back", "left_repeater", "right_repeater", "left_pillar", "right_pillar")
 
@@ -70,33 +70,60 @@ _tel_job = {"running": False, "done": 0, "total": 0}
 _tel_guard = threading.Lock()
 _analytics_cache = {"t": 0.0, "data": None}
 _analytics_guard = threading.Lock()
+_trips_cache = {"t": 0.0, "data": None}
+_trips_guard = threading.Lock()
+_rescan_running = False
+_rescan_guard = threading.Lock()
+# Progress of the running scan, polled by the UI via /api/status. "phase" is one
+# of walk (listing folders), index (per-file state), meta (telemetry/event JSON).
+_scan_job = {"running": False, "phase": "", "done": 0, "total": 0,
+             "clips": 0, "new": 0, "started": 0.0, "took": 0.0}
 
 def _dbg(msg):
     if DEBUG:
         print(f"[debug] {msg}", flush=True)
 
-# Persistent metadata cache — avoids re-reading telemetry/event JSON on every scan
-_meta_cache = {}
-_META_CACHE_FILE = ""
 
-def _load_meta_cache():
-    global _meta_cache
-    if _META_CACHE_FILE and os.path.isfile(_META_CACHE_FILE):
+# ---------- Persistent caches (survive add-on restarts) ----------
+# Every entry below is keyed by a write-once path or clip id. TeslaCam files are
+# never modified in place — a clip either exists or is deleted — so a cached
+# answer stays valid until _scan() prunes the vanished path or the derived data
+# is explicitly invalidated. Without this, each scan re-read every file off the
+# NAS: on a network mount that dominates the request time by orders of magnitude.
+_meta_cache = {}     # clip id  -> telemetry/event metadata (has_tel, gps, reason)
+_enc_cache = {}      # scanrel  -> bool, file carries an eCryptfs header
+_track_cache = {}    # clip id  -> decimated GPS track for the trip map
+_size_cache = {}     # scanrel  -> file size in bytes (analytics storage stats)
+_CACHE_FILES = {}    # name -> (dict, path)
+
+def _cache_init(data_dir):
+    """Bind each cache dict to its JSON file and load what is already there."""
+    for name, d in (("meta", _meta_cache), ("enc", _enc_cache),
+                    ("track", _track_cache), ("size", _size_cache)):
+        path = os.path.join(data_dir, f".{name}_cache.json")
+        _CACHE_FILES[name] = (d, path)
+        if os.path.isfile(path):
+            try:
+                d.update(json.load(open(path, encoding="utf-8")))
+            except Exception:
+                pass
+    _dbg(f"caches loaded: meta={len(_meta_cache)} enc={len(_enc_cache)} "
+         f"track={len(_track_cache)} size={len(_size_cache)}")
+
+def _cache_save(*names):
+    """Atomically persist the named caches (all of them when called bare)."""
+    for name in (names or tuple(_CACHE_FILES)):
+        ent = _CACHE_FILES.get(name)
+        if not ent:
+            continue
+        d, path = ent
         try:
-            _meta_cache = json.load(open(_META_CACHE_FILE, encoding="utf-8"))
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(d, f, separators=(",", ":"))
+            os.replace(tmp, path)
         except Exception:
-            _meta_cache = {}
-
-def _save_meta_cache():
-    if not _META_CACHE_FILE:
-        return
-    try:
-        tmp = _META_CACHE_FILE + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(_meta_cache, f, separators=(",", ":"))
-        os.replace(tmp, _META_CACHE_FILE)
-    except Exception:
-        pass
+            pass
 
 
 # ---------- Path helpers (scanrel = path relative to SCAN_DIR, posix) ----------
@@ -122,32 +149,71 @@ def _telsr(folder, ts):
     return (folder + "/" if folder else "") + f"{ts}-front.telemetry.json"
 
 
-# ---------- Encrypted file detection (cached) ----------
-_enc_files = {}
+# ---------- Directory walk ----------
+def _listdir_tree(root, report=False):
+    """All file paths under root, relative + posix, from one os.scandir pass per
+    directory. SMB returns a whole directory listing in a single round trip, so
+    this costs ~1 network op per folder — as opposed to one os.path.exists() per
+    file, which is what made the old scan crawl on a NAS.
 
+    report=True publishes folder progress to _scan_job. The total is unknown
+    while walking (that is what the walk is finding out), so the UI shows this
+    phase as indeterminate and only counts folders done."""
+    files = set()
+    if not root or not os.path.isdir(root):
+        return files
+    stack = [("", root)]
+    folders = 0
+    while stack:
+        rel, absdir = stack.pop()
+        try:
+            entries = list(os.scandir(absdir))
+        except OSError:
+            continue
+        folders += 1
+        if report:
+            _scan_job["done"] = folders
+            _scan_job["clips"] = len(files)
+        for e in entries:
+            r = f"{rel}/{e.name}" if rel else e.name
+            try:
+                if e.is_dir(follow_symlinks=False):
+                    stack.append((r, e.path))
+                else:
+                    files.add(r)
+            except OSError:
+                continue
+    return files
+
+
+# ---------- Encrypted file detection (persistently cached) ----------
 def _is_encrypted(abspath, sr):
-    """Check if a file is eCryptfs-encrypted, with in-memory cache."""
-    if sr in _enc_files:
-        return _enc_files[sr]
+    """Whether a file carries an eCryptfs header. The 28-byte read is the single
+    most expensive part of a scan over SMB, so the answer is cached to disk and
+    only ever computed once per file."""
+    if sr in _enc_cache:
+        return _enc_cache[sr]
     try:
         with open(abspath, "rb") as f:
             head = f.read(28)
         result = is_ecryptfs(head)
     except Exception:
         result = False
-    _enc_files[sr] = result
+    _enc_cache[sr] = result
     return result
 
 # ---------- Clip state ----------
-def _cam_state(sr, keys):
-    abspath = src_abspath(sr)
-    if _is_encrypted(abspath, sr):
-        if os.path.exists(cache_abspath(sr)):
-            return {"state": "ready", "url": "media/" + sr}
-        if sr in keys or enc_id(sr) in keys:
-            return {"state": "key", "url": None}
-        return {"state": "locked", "url": None}
-    return {"state": "plain", "url": "media/" + sr}
+def _cam_state(sr, keys, out_files=None):
+    """out_files: pre-walked set of paths under OUT_DIR. When given, the
+    'is it already decrypted?' test is a set lookup instead of an SMB stat."""
+    if not _is_encrypted(src_abspath(sr), sr):
+        return {"state": "plain", "url": "media/" + sr}
+    cached = sr in out_files if out_files is not None else os.path.exists(cache_abspath(sr))
+    if cached:
+        return {"state": "ready", "url": "media/" + sr}
+    if sr in keys or enc_id(sr) in keys:
+        return {"state": "key", "url": None}
+    return {"state": "locked", "url": None}
 
 def _haversine_km(lat1, lon1, lat2, lon2):
     r = 6371.0088
@@ -157,12 +223,15 @@ def _haversine_km(lat1, lon1, lat2, lon2):
     a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
     return r * (2 * math.atan2(math.sqrt(a), math.sqrt(1 - a)))
 
-def _compute_meta(c):
-    """Expensive: reads telemetry + event JSON from disk."""
-    telp = cache_abspath(_telsr(c["folder"], c["timestamp"]))
+def _compute_meta(c, out_files=None, src_files=None):
+    """Expensive: reads telemetry + event JSON from disk. Only ever runs for
+    clips missing from _meta_cache; the pre-walked sets spare it two SMB stats."""
+    telsr = _telsr(c["folder"], c["timestamp"])
+    telp = cache_abspath(telsr)
     ht = False
     gps_center = None
-    if os.path.isfile(telp):
+    has_tel_file = telsr in out_files if out_files is not None else os.path.isfile(telp)
+    if has_tel_file:
         try:
             tel = json.load(open(telp, encoding="utf-8"))
             ht = tel.get("frame_count", 0) > 0
@@ -173,8 +242,9 @@ def _compute_meta(c):
                 gps_center = {"center_lat": avg_lat, "center_lon": avg_lon}
         except Exception:
             ht = False
+    ejsr = (c["folder"] + "/" if c["folder"] else "") + "event.json"
     ejp = os.path.join(SCAN_DIR, c["folder"], "event.json")
-    he = os.path.isfile(ejp)
+    he = ejsr in src_files if src_files is not None else os.path.isfile(ejp)
     reason = None
     if he:
         try:
@@ -189,7 +259,7 @@ def _compute_meta(c):
             pass
     return {"has_tel": ht, "has_event": he, "gps_bounds": gps_center, "has_data": ht or he, "reason": reason}
 
-def _finalize(c):
+def _finalize(c, out_files=None, src_files=None):
     sts = [cm["state"] for cm in c["cameras"].values()]
     c["needs_prepare"] = "key" in sts
     c["has_locked"] = "locked" in sts
@@ -197,7 +267,7 @@ def _finalize(c):
     cid = c["id"]
     cached = _meta_cache.get(cid)
     if cached is None or "reason" not in cached:
-        cached = _compute_meta(c)
+        cached = _compute_meta(c, out_files, src_files)
         _meta_cache[cid] = cached
     c["has_tel"] = cached["has_tel"]
     c["has_event"] = cached["has_event"]
@@ -207,72 +277,170 @@ def _finalize(c):
     return c
 
 def _clip_track(c):
-    """Decimated GPS track (<=40 pts) for a clip, read fresh from its telemetry
-    cache file. Deliberately NOT stored in the persistent _meta_cache: doing so
-    would bump the cache-sentinel check in _finalize() and force a synchronous
-    full re-scan of every historical clip's telemetry/event JSON on the very
-    first request after deploy (slow/blocking on a network-mounted NAS). Only
-    called from build_trips(), off the /api/status and /api/clips hot path."""
+    """Decimated GPS track (<=40 pts) for a clip, from its telemetry file.
+
+    Kept in its own persistent cache rather than in _meta_cache: adding a key to
+    the _meta_cache entries would trip the cache-sentinel check in _finalize()
+    and force a synchronous re-read of every historical clip's telemetry/event
+    JSON on the first request after deploy. Telemetry files are written once and
+    never edited, so a cached track never goes stale — which turns /api/trips
+    from "read every telemetry JSON off the NAS" into pure CPU work."""
     if not c.get("has_tel"):
         return []
+    cid = c["id"]
+    hit = _track_cache.get(cid)
+    if hit is not None:
+        return hit
     telp = cache_abspath(_telsr(c["folder"], c["timestamp"]))
     if not os.path.isfile(telp):
         return []
     try:
         tel = json.load(open(telp, encoding="utf-8"))
         pts = [[f["lat"], f["lon"]] for f in tel.get("frames", []) if f.get("lat") and f.get("lon")]
-        if not pts:
-            return []
         step = max(1, len(pts) // 40)
-        return pts[::step]
+        track = pts[::step] if pts else []
     except Exception:
         return []
+    _track_cache[cid] = track
+    return track
+
+
+def _prune_caches(src_files, clip_ids):
+    """Drop cache entries for files/clips that no longer exist (delete_originals,
+    manual cleanup). Only walks the caches when something actually vanished."""
+    dropped = 0
+    if len(_enc_cache) > len(src_files):
+        for sr in [k for k in _enc_cache if k not in src_files]:
+            del _enc_cache[sr]
+            dropped += 1
+    if len(_size_cache) > len(src_files):
+        for sr in [k for k in _size_cache if k not in src_files]:
+            del _size_cache[sr]
+            dropped += 1
+    for cache in (_meta_cache, _track_cache):
+        if len(cache) > len(clip_ids):
+            for cid in [k for k in cache if k not in clip_ids]:
+                del cache[cid]
+                dropped += 1
+    return dropped
 
 
 def _scan(keys=None):
     t0 = time.time()
-    if keys is None:
-        keys = keystore.load(KEYS_FILE)
-    clips = {}
-    for path in glob.glob(os.path.join(SCAN_DIR, "**", "*.mp4"), recursive=True):
-        m = TS_RE.search(os.path.basename(path))
-        if not m:
-            continue
-        ts, cam = m.group(1), m.group(2).lower()
-        sr = os.path.relpath(path, SCAN_DIR).replace("\\", "/")
-        folder = posixpath.dirname(sr)
-        ck = folder + "|" + ts
-        top = folder.split("/")[0] if folder else ""
-        vehicle = top if top.lower().startswith("tesla") and top.lower() not in ("teslacam",) else ""
-        c = clips.setdefault(ck, {"id": ck, "folder": folder, "timestamp": ts,
-                                  "source": top, "vehicle": vehicle,
-                                  "cameras": {}, "telemetry": None})
-        c["cameras"][cam] = _cam_state(sr, keys)
-        if cam == "front" and os.path.exists(cache_abspath(_telsr(folder, ts))):
-            c["telemetry"] = "media/" + _telsr(folder, ts)
-    t_glob = time.time()
-    cache_misses = sum(1 for c in clips.values() if c["id"] not in _meta_cache or "reason" not in _meta_cache[c["id"]])
-    out = [_finalize(c) for c in clips.values()]
-    out.sort(key=lambda x: x["timestamp"], reverse=True)
-    _save_meta_cache()
-    _dbg(f"_scan: {len(out)} clips (glob+state {t_glob-t0:.3f}s, "
-         f"{cache_misses} meta cache misses recomputed, finalize+save {time.time()-t_glob:.3f}s, "
-         f"total {time.time()-t0:.3f}s)")
-    return out
+    _scan_job.update({"running": True, "phase": "walk", "done": 0, "total": 0,
+                      "clips": 0, "new": 0, "started": t0})
+    try:
+        if keys is None:
+            keys = keystore.load(KEYS_FILE)
+        # Two directory walks instead of thousands of individual stat/open calls.
+        src_files = _listdir_tree(SCAN_DIR, report=True)
+        out_files = (src_files if os.path.normpath(OUT_DIR) == os.path.normpath(SCAN_DIR)
+                     else _listdir_tree(OUT_DIR))
+        t_walk = time.time()
+
+        mp4s = [(sr, m) for sr, m in
+                ((sr, TS_RE.search(posixpath.basename(sr))) for sr in src_files) if m]
+        # Files never classified before are the only ones costing an SMB read, so
+        # they are what makes this phase slow — report them as the "new" count.
+        _scan_job.update({"phase": "index", "done": 0, "total": len(mp4s), "clips": 0,
+                          "new": sum(1 for sr, _ in mp4s if sr not in _enc_cache)})
+
+        enc_misses = 0
+        clips = {}
+        for i, (sr, m) in enumerate(mp4s):
+            ts, cam = m.group(1), m.group(2).lower()
+            folder = posixpath.dirname(sr)
+            ck = folder + "|" + ts
+            top = folder.split("/")[0] if folder else ""
+            vehicle = top if top.lower().startswith("tesla") and top.lower() not in ("teslacam",) else ""
+            c = clips.setdefault(ck, {"id": ck, "folder": folder, "timestamp": ts,
+                                      "source": top, "vehicle": vehicle,
+                                      "cameras": {}, "telemetry": None})
+            if sr not in _enc_cache:
+                enc_misses += 1
+            c["cameras"][cam] = _cam_state(sr, keys, out_files)
+            if cam == "front":
+                telsr = _telsr(folder, ts)
+                if telsr in out_files:
+                    c["telemetry"] = "media/" + telsr
+            if not i % 25:
+                _scan_job["done"] = i
+                _scan_job["clips"] = len(clips)
+        t_state = time.time()
+
+        meta_misses = sum(1 for cid in clips
+                          if cid not in _meta_cache or "reason" not in _meta_cache[cid])
+        _scan_job.update({"phase": "meta", "done": 0, "total": len(clips),
+                          "clips": len(clips), "new": meta_misses})
+        out = []
+        for i, c in enumerate(clips.values()):
+            out.append(_finalize(c, out_files, src_files))
+            if not i % 25:
+                _scan_job["done"] = i
+        # id as tie-breaker: src_files is a set, so equal timestamps in different
+        # folders would otherwise reshuffle the list between scans
+        out.sort(key=lambda x: (x["timestamp"], x["id"]), reverse=True)
+        pruned = _prune_caches(src_files, clips)
+        if enc_misses or meta_misses or pruned:
+            # Only write when something actually changed — a periodic background
+            # rescan must not rewrite megabytes of JSON to the SD card every time.
+            _cache_save("enc", "meta")
+        _dbg(f"_scan: {len(out)} clips (walk {t_walk-t0:.3f}s / {len(src_files)} src + "
+             f"{len(out_files)} out files, state {t_state-t_walk:.3f}s with {enc_misses} "
+             f"header reads, {meta_misses} meta misses, {pruned} pruned, "
+             f"finalize+save {time.time()-t_state:.3f}s, total {time.time()-t0:.3f}s)")
+        return out
+    finally:
+        _scan_job.update({"running": False, "phase": "", "took": time.time() - t0})
+
+
+def _rescan_async():
+    """Refresh the clip list in the background, one scan at a time. Requests are
+    never blocked by a scan — they get the previous list until this finishes."""
+    global _rescan_running
+    with _rescan_guard:
+        if _rescan_running:
+            return
+        _rescan_running = True
+
+    def work():
+        global _rescan_running
+        try:
+            data = _scan()
+            with _lcache_guard:
+                _lcache["data"] = data
+                _lcache["t"] = time.time()
+        except Exception as e:
+            print("[scan]", e, flush=True)
+        finally:
+            with _rescan_guard:
+                _rescan_running = False
+
+    threading.Thread(target=work, daemon=True).start()
 
 
 def clips_cached():
-    now = time.time()
+    """Stale-while-revalidate, and never blocking: always answers from memory.
+    A stale list is served as-is while it refreshes in the background; a cold
+    cache answers empty rather than holding the request open for the length of a
+    full NAS scan — the UI renders _scan_job progress instead and reloads when
+    the scan finishes. Blocking here is what made the whole viewer look hung."""
     with _lcache_guard:
-        if _lcache["data"] is None or now - _lcache["t"] >= LIST_TTL:
-            _lcache["data"] = _scan()
-            _lcache["t"] = now
-        return _lcache["data"]
+        data = _lcache["data"]
+        fresh = data is not None and time.time() - _lcache["t"] < LIST_TTL
+    if not fresh:
+        _rescan_async()
+    return data if data is not None else []
 
 def invalidate(clip_id=None):
     _lcache["t"] = 0.0
+    _trips_cache["t"] = 0.0
     if clip_id:
         _meta_cache.pop(clip_id, None)
+        _track_cache.pop(clip_id, None)
+    # Deliberately does NOT kick off a rescan: make_thumb() invalidates once per
+    # generated thumbnail, which during a batch job would chain scans back to
+    # back. The next request picks the refresh up and is served stale meanwhile.
 
 
 def _clip_cams(cid):
@@ -351,6 +519,7 @@ def _make_trip(vehicle, clips):
 def build_trips(clips, gap_min=TRIP_GAP_MIN):
     """Group clips per vehicle into contiguous trips by start-timestamp gap. Newest first."""
     t0 = time.time()
+    tracks_before = len(_track_cache)
     by_vehicle = {}
     for c in clips:
         by_vehicle.setdefault(c.get("vehicle") or "", []).append(c)
@@ -369,23 +538,48 @@ def build_trips(clips, gap_min=TRIP_GAP_MIN):
         if group:
             trips.append(_make_trip(vehicle, group))
     trips.sort(key=lambda t: t["start"], reverse=True)
-    _dbg(f"build_trips: {len(trips)} trips from {len(clips)} clips in {time.time()-t0:.3f}s")
+    if len(_track_cache) != tracks_before:
+        _cache_save("track")
+    _dbg(f"build_trips: {len(trips)} trips from {len(clips)} clips in {time.time()-t0:.3f}s "
+         f"({len(_track_cache)-tracks_before} tracks read from disk)")
     return trips
+
+
+def trips_cached():
+    now = time.time()
+    with _trips_guard:
+        if _trips_cache["data"] is None or now - _trips_cache["t"] >= LIST_TTL:
+            _trips_cache["data"] = build_trips(clips_cached())
+            _trips_cache["t"] = now
+        return _trips_cache["data"]
+
+
+def _file_size(sr):
+    """Size of a clip file, cached to disk — clips are write-once, so the value
+    never changes. Saves one SMB stat per camera per clip on every analytics run."""
+    hit = _size_cache.get(sr)
+    if hit is not None:
+        return hit
+    full = resolve_media(sr)
+    size = os.path.getsize(full) if full else 0
+    _size_cache[sr] = size
+    return size
 
 
 def compute_analytics():
     t0 = time.time()
     clips = clips_cached()
-    trips = build_trips(clips)
+    trips = trips_cached()
+    sizes_before = len(_size_cache)
     by_folder = {}
     for c in clips:
         top = c["folder"].split("/")[0] if c["folder"] else "(root)"
         entry = by_folder.setdefault(top, {"folder": top, "bytes": 0, "clip_count": 0})
         entry["clip_count"] += 1
         for cam in c["cameras"]:
-            full = resolve_media(_sr_of_cam(c["folder"], c["timestamp"], cam))
-            if full:
-                entry["bytes"] += os.path.getsize(full)
+            entry["bytes"] += _file_size(_sr_of_cam(c["folder"], c["timestamp"], cam))
+    if len(_size_cache) != sizes_before:
+        _cache_save("size")
     events_by_reason = {}
     clips_by_month = {}
     for c in clips:
@@ -520,7 +714,8 @@ def ensure_all():
     if jobs:
         with ThreadPoolExecutor(max_workers=4) as ex:
             list(ex.map(do, jobs))
-    _meta_cache.clear()
+    _meta_cache.clear()          # decrypting produces telemetry -> metadata and
+    _track_cache.clear()         # GPS tracks must be recomputed
     invalidate()
     return {"decrypted": len(jobs)}
 
@@ -643,6 +838,7 @@ def gen_all_telemetry():
             print(f"[telemetry] {_tel_job['done']}/{_tel_job['total']} extracted", flush=True)
     finally:
         _meta_cache.clear()
+        _track_cache.clear()
         invalidate()
         _tel_job["running"] = False
 
@@ -797,6 +993,10 @@ class H(BaseHTTPRequestHandler):
             st["last_api"] = _last_api
             st["thumb_job"] = _thumb_job
             st["tel_job"] = _tel_job
+            st["scan_job"] = _scan_job
+            # False until the first scan has produced a list — lets the UI tell
+            # "still indexing" apart from "genuinely no clips on the share"
+            st["ready"] = _lcache["data"] is not None
             return self._send(200, st)
         if path == "/api/clips":
             return self._send(200, clips_cached())
@@ -821,7 +1021,7 @@ class H(BaseHTTPRequestHandler):
                     pts.append([gb["center_lat"], gb["center_lon"], c["id"]])
             return self._send(200, {"points": pts})
         if path == "/api/trips":
-            return self._send(200, build_trips(clips_cached()))
+            return self._send(200, trips_cached())
         if path == "/api/analytics":
             return self._send(200, analytics_cached())
         if path == "/api/pending.json":
@@ -950,8 +1150,10 @@ if __name__ == "__main__":
     DEBUG = a.debug
     auth = TeslaAuth(os.path.join(DATA_DIR, "token_store.json"))
     os.makedirs(os.path.join(OUT_DIR, ".thumbs"), exist_ok=True)
-    _META_CACHE_FILE = os.path.join(DATA_DIR, ".meta_cache.json")
-    _load_meta_cache()
+    _cache_init(DATA_DIR)
+    # Warm the clip list before the panel is first opened, so the very first
+    # request is served from memory instead of waiting for a full NAS scan.
+    _rescan_async()
     threading.Thread(target=scheduler, daemon=True).start()
     print(f"Viewer :{a.port} scan={SCAN_DIR} enc={SRC_DIR} (prefix='{ENC_PREFIX}') "
           f"out={OUT_DIR} keys={KEYS_FILE} auto_decrypt={AUTO_DECRYPT} "

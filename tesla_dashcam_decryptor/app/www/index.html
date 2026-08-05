@@ -25,6 +25,7 @@
   <button class="iconbtn" id="themeToggle" title="Toggle light/dark theme"></button>
   <button class="toolbtn" id="toolsbtn">🔑 Keys</button>
 </header>
+<div id="scanbar"></div>
 <main>
   <section id="view-clips" class="view active">
     <div id="filterbar">
@@ -134,11 +135,13 @@
       <h3>C · Batch thumbnail generation</h3>
       <p>Generate thumbnails for all clips with telemetry or event data once, so they appear instantly instead of loading lazily while scrolling:</p>
       <div class="row"><button class="btn" id="thumbsbtn">🖼️ Generate thumbnails</button><span id="thumbmsg" style="color:var(--muted);font-size:12px"></span></div>
+      <div class="jobbar" id="thumbbar"></div>
     </div>
     <div class="step">
       <h3>E · Backfill telemetry for unencrypted clips</h3>
       <p>Plain (unencrypted) clips only get their SEI telemetry (speed, gear, steering, …) extracted when opened in the viewer. Run this once to extract it for all existing plain clips that don't have it yet:</p>
       <div class="row"><button class="btn" id="telbtn">🛰️ Extract all telemetry</button><span id="telmsg" style="color:var(--muted);font-size:12px"></span></div>
+      <div class="jobbar" id="telbar"></div>
     </div>
     <div class="step">
       <h3>D · Bookmarklet (fallback if API is blocked)</h3>

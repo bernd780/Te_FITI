@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.7.1
+- Fix: loading clips could take minutes (or appear to hang entirely) on installs with a lot of footage on a network share. `/api/status` and `/api/clips` re-scanned the whole TeslaCam tree from scratch every 15 seconds, and each scan opened *every* MP4 over SMB to read its 28-byte eCryptfs header — thousands of network round trips per request, with all other requests queued behind the scan lock
+- The scan now walks each directory once with `os.scandir` (one SMB round trip per folder) instead of issuing an `os.path.exists()` per camera file
+- New persistent caches in `/data`, all keyed by write-once paths so they stay valid across restarts: `.enc_cache.json` (eCryptfs header per file — a file is now read at most once, ever), `.track_cache.json` (GPS tracks, so `/api/trips` no longer re-reads every telemetry JSON off the NAS on each call), `.size_cache.json` (clip sizes for the Analytics storage stats). Stale entries are pruned when files disappear
+- Requests are never blocked by a scan any more: a stale clip list is served immediately while it refreshes in the background, and the list is warmed at start-up rather than on the first page load
+- `/api/trips` is now cached like `/api/clips` and `/api/analytics` instead of being rebuilt on every call
+- Clip-list cache lifetime raised from 15 s to 120 s, analytics from 60 s to 300 s — with background refresh, a short TTL only caused redundant scans
+- New progress bar under the header while the clip index is being built, with the current phase (indexing folders → reading clip states → reading telemetry & events), a count and a percentage. The folder walk shows as indeterminate because it cannot know its total until it has finished. The clip list reloads by itself the moment the scan completes
+- The batch thumbnail and telemetry jobs now show the same progress bar instead of a bare `12/340…` counter
+- `/api/status` reports the new `scan_job` and `ready` fields; `ready` lets the UI say "still indexing" instead of showing an empty list as if the share had no clips
+
 ## 0.7.0
 - The clip list is the default view again (new **Clips** tab), with **Map** and **Analytics** as secondary tabs — the map is no longer the landing page
 - Map area selection: draw a rectangle, see how many clips fall inside, and jump straight to the filtered list ("View list"). The active area filter shows as a removable chip in the Clips view

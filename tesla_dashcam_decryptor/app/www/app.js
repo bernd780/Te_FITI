@@ -9,10 +9,55 @@ let gpsFilter=null, _gpsMarkers=[];
 
 const BM="(async()=>{const pick=document.createElement('input');pick.type='file';pick.accept='application/json,.json';pick.onchange=async()=>{try{const job=JSON.parse(await pick.files[0].text());const items=job.items||job;let raw=sessionStorage.getItem('ROCP_token'),token=raw;try{const p=JSON.parse(raw);token=(typeof p==='string')?p:(p.access_token||p.token||p.accessToken||raw);}catch(e){}if(!token){alert('No Tesla token – log in to dashcam.tesla.com first.');return;}const out=[],CH=30;for(let i=0;i<items.length;i+=CH){const r=await fetch('/api/1/decrypt/batch',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+token,'Accept':'application/json'},body:JSON.stringify({items:items.slice(i,i+CH)})});if(!r.ok){alert('API error '+r.status+' at chunk '+i);return;}const j=await r.json();(j.results||[]).forEach(x=>{if(x.key)out.push({id:x.id,key:x.key});});}const blob=new Blob([JSON.stringify({results:out})],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='keys.json';a.click();alert('Done: '+out.length+' keys -> keys.json');}catch(e){alert('Error: '+e.message);}};pick.click();})();";
 
+// ---------- Progress bars ----------
+// One renderer for the index scan and both batch jobs. total<=0 renders as
+// indeterminate — the folder walk only learns its total once it is done.
+function renderBar(el,{label,done,total,note}){
+  if(!el) return;
+  const known=total>0;
+  const pct=known?Math.min(100,Math.round(done/total*100)):0;
+  el.innerHTML=`<div class="pbar${known?"":" indet"}">`
+    +`<div class="pbLabel"><span>${label}</span><b>${known?done+" / "+total+" · "+pct+"%":(note||"")}</b></div>`
+    +`<div class="pbTrack"><div class="pbFill"></div></div>`
+    +(known&&note?`<div class="pbLabel"><span>${note}</span></div>`:"")
+    +`</div>`;
+  if(known) el.querySelector(".pbFill").style.width=pct+"%";
+}
+
+const SCAN_PHASES={
+  walk:  j=>({label:"📂 Indexing folders on the NAS…", done:j.done, total:0,
+              note:j.done+" folders"}),
+  index: j=>({label:"🎞️ Reading clip states…", done:j.done, total:j.total,
+              note:j.new?j.new+" new files to inspect":"all from cache"}),
+  meta:  j=>({label:"📊 Reading telemetry & events…", done:j.done, total:j.total,
+              note:j.new?j.new+" new clips":"all from cache"})
+};
+
+let _scanWasRunning=false;
+function renderScanBar(s){
+  const bar=$("#scanbar"), j=(s&&s.scan_job)||{};
+  const show=!!j.running;
+  bar.classList.toggle("on",show);
+  if(show){
+    const f=SCAN_PHASES[j.phase]||SCAN_PHASES.walk;
+    renderBar(bar,f(j));
+  }else{
+    bar.innerHTML="";
+  }
+  // A finished scan means the clip list changed under us — pull it in.
+  if(_scanWasRunning&&!show) loadClips(true);
+  _scanWasRunning=show;
+  return show;
+}
+
 // ---------- Status ----------
 async function refreshStatus(){
   try{
     const s=await fetch("api/status").then(r=>r.json());
+    renderScanBar(s);
+    if(s.ready===false&&!$("#cliplist").querySelector(".cliprow")){
+      $("#cliplist").innerHTML='<div class="loading">⏳ Building the clip index — the list appears as soon as it is done.</div>';
+    }
     $("#status").innerHTML=`🎞️ <b>${s.clips}</b> Clips · 🔒 <b>${s.encrypted}</b> · 🔑 <b>${s.keyed}</b> · ✅ <b>${s.decrypted}</b> · ⏳ no key <b>${s.need_keys}</b>`+(s.busy?" · running…":"");
     const li=s.login||{};
     $("#lpill").className="pill "+(li.logged_in?"ok":"bad"); $("#lpill").textContent=li.logged_in?(li.has_refresh?"logged in ✓":"logged in"):"not logged in";
@@ -550,11 +595,14 @@ async function boot(){
       const s=await fetch("api/status").then(r=>r.json()).catch(()=>null);
       if(s&&s.thumb_job){
         const j=s.thumb_job;
+        $("#thumbbar").classList.toggle("on",!!j.running);
         if(j.running){
           $("#thumbmsg").textContent=`${j.done}/${j.total}…`;
+          renderBar($("#thumbbar"),{label:"🖼️ Generating thumbnails…",done:j.done,total:j.total});
         } else {
           clearInterval(poll);
           $("#thumbmsg").textContent=j.total>0?`${j.done}/${j.total} done ✓`:"none new";
+          $("#thumbbar").innerHTML="";
           $("#thumbsbtn").disabled=false;
           loadClips(true);
         }
@@ -568,11 +616,14 @@ async function boot(){
       const s=await fetch("api/status").then(r=>r.json()).catch(()=>null);
       if(s&&s.tel_job){
         const j=s.tel_job;
+        $("#telbar").classList.toggle("on",!!j.running);
         if(j.running){
           $("#telmsg").textContent=`${j.done}/${j.total}…`;
+          renderBar($("#telbar"),{label:"🛰️ Extracting telemetry…",done:j.done,total:j.total});
         } else {
           clearInterval(poll);
           $("#telmsg").textContent=j.total>0?`${j.done}/${j.total} done ✓`:"none new";
+          $("#telbar").innerHTML="";
           $("#telbtn").disabled=false;
           loadClips(true);
         }
@@ -598,10 +649,10 @@ async function boot(){
   applyThemeIcon();
 
   // If the very first load takes unusually long, say so instead of sitting
-  // silently on "loading" — enable debug_logging in the add-on options to
-  // see request timing / scan duration in the add-on log.
+  // silently on "loading". An index scan in progress is NOT unexpected — that
+  // one has its own progress bar — so only complain when nothing is running.
   const slowHint=setTimeout(()=>{
-    if($("#status").textContent.includes("loading")){
+    if($("#status").textContent.includes("loading")&&!$("#scanbar").classList.contains("on")){
       $("#status").textContent="⏳ still loading… (taking longer than expected — check the add-on log, or enable debug_logging)";
     }
   },8000);
@@ -613,6 +664,16 @@ async function boot(){
   await loadClips(false);
   renderEventMarkers();
   try { await loadTrips(); } catch(e){ console.error("trips failed:", e); }
-  setInterval(()=>refreshStatus().catch(()=>{}),5000);
+  // Poll faster while an index scan is running, so the bar actually moves.
+  let pollMs=5000;
+  (function poll(){
+    setTimeout(async()=>{
+      try{
+        const s=await refreshStatus();
+        pollMs=(s&&s.scan_job&&s.scan_job.running)?1500:5000;
+      }catch(e){}
+      poll();
+    },pollMs);
+  })();
 }
 boot();

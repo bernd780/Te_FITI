@@ -136,3 +136,26 @@ input[type=text]{flex:1;min-width:240px;background:#0e1318;border:1px solid var(
 .pill.ok{color:var(--ok);border-color:var(--ok)} .pill.bad{color:var(--warn);border-color:var(--warn)}
 #msg,#lmsg{font-size:12px;margin-top:8px} code{background:#0e1318;border:1px solid var(--line);border-radius:4px;padding:1px 5px}
 .x{position:absolute;top:12px;right:16px;cursor:pointer;color:var(--muted);font-size:20px}
+
+/* ---------- Progress bars ---------- */
+/* Shared by the clip index scan and the batch thumbnail/telemetry jobs. */
+.pbar{display:flex;flex-direction:column;gap:5px;width:100%}
+.pbar .pbLabel{display:flex;justify-content:space-between;gap:10px;font-size:11px;color:var(--muted)}
+.pbar .pbLabel b{color:var(--txt);font-weight:600}
+.pbar .pbTrack{position:relative;height:6px;border-radius:99px;background:var(--panel2);overflow:hidden}
+.pbar .pbFill{height:100%;border-radius:99px;background:var(--accent);width:0;transition:width .35s ease}
+/* Indeterminate: the folder walk cannot know its total until it has finished. */
+.pbar.indet .pbFill{width:35%;animation:pbSlide 1.15s ease-in-out infinite}
+@keyframes pbSlide{0%{transform:translateX(-100%)}100%{transform:translateX(286%)}}
+@media (prefers-reduced-motion:reduce){
+  .pbar.indet .pbFill{animation:none;width:100%;opacity:.45}
+  .pbar .pbFill{transition:none}
+}
+
+/* Scan bar sits under the header, full width, and collapses when idle. */
+#scanbar{display:none;padding:8px 14px;border-bottom:1px solid var(--line);background:var(--panel)}
+#scanbar.on{display:block}
+
+/* Batch-job bars inside the tools panel */
+.jobbar{margin-top:8px;display:none}
+.jobbar.on{display:block}
