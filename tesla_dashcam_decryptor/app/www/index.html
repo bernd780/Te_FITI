@@ -17,9 +17,9 @@
      no-store, so changing it here is what forces browsers onto the new assets;
      0.7.2 shipped them with a long max-age and would otherwise keep serving
      the previous app.js from cache for a day after an update. -->
-<link rel="stylesheet" href="static/leaflet.css?v=0.7.7"/>
-<script src="static/leaflet.js?v=0.7.7" defer></script>
-<link rel="stylesheet" href="static/style.css?v=0.7.7">
+<link rel="stylesheet" href="static/leaflet.css?v=0.7.8"/>
+<script src="static/leaflet.js?v=0.7.8" defer></script>
+<link rel="stylesheet" href="static/style.css?v=0.7.8">
 </head>
 <body>
 <header>
@@ -144,6 +144,13 @@
       <div id="lmsg"></div>
     </div>
     <div class="step">
+      <h3>B · Decrypt all clips permanently</h3>
+      <p>Decrypts every clip that has a key and writes it to the <code>decrypted/</code>
+         folder on your NAS, so it plays without any further work. <span id="decDeleteNote"></span></p>
+      <div class="row"><button class="btn" id="decryptbtn">🔓 Decrypt everything</button><button class="btn ghost" id="deccancel" style="display:none">✕ Cancel</button><span id="decmsg" style="color:var(--muted);font-size:12px"></span></div>
+      <div class="jobbar" id="decbar"></div>
+    </div>
+    <div class="step">
       <h3>C · Batch thumbnail generation</h3>
       <p>Generate thumbnails for all clips with telemetry or event data once, so they appear instantly instead of loading lazily while scrolling:</p>
       <div class="row"><button class="btn" id="thumbsbtn">🖼️ Generate thumbnails</button><span id="thumbmsg" style="color:var(--muted);font-size:12px"></span></div>
@@ -170,6 +177,6 @@
   </div>
 </div>
 
-<script src="static/app.js?v=0.7.7" defer></script>
+<script src="static/app.js?v=0.7.8" defer></script>
 </body>
 </html>

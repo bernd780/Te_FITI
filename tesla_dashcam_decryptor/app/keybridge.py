@@ -89,6 +89,34 @@ def _read_head(path):
         return path, None
 
 
+def items_for(files: list) -> list:
+    """Wrapped-key items for an explicit list of (abspath, id) pairs.
+
+    Preferred over scan_items(): the caller already knows which files are
+    encrypted and keyless from the viewer's index, so nothing is read that
+    cannot possibly yield a key. scan_items() instead treats every media file
+    missing from the key store as a candidate — which includes every *plain*
+    clip, since those are never in it — and reads an 8 KB header from each.
+    """
+    paths = [p for p, _ in files]
+    ids = [i for _, i in files]
+    items = []
+    if not paths:
+        return items
+    with ThreadPoolExecutor(max_workers=SCAN_WORKERS) as ex:
+        # ex.map preserves input order, so ids stay aligned with the results
+        for cid, (_path, head) in zip(ids, ex.map(_read_head, paths)):
+            if not head or not is_ecryptfs(head):
+                continue
+            try:
+                wk = parse_wrapped_key(head)
+            except Exception:
+                continue
+            wk["id"] = cid
+            items.append(wk)
+    return items
+
+
 def scan_items(src_dir: str, keys: dict, limit: int = 0) -> list:
     """Items (id + wrapped key) for files WITHOUT a key – for Direct API or bookmarklet."""
     pend = files_needing_key(src_dir, keys)

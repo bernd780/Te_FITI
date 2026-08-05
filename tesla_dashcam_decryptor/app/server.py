@@ -21,6 +21,7 @@ ffmpeg at the event timestamp (event.json) or ~1 s and caches it.
   POST /api/prepare           {id} -> decrypt clip on demand, return fresh clip
   POST /api/fetch             Direct API: fetch missing keys now
   POST /api/decrypt           decrypt all keyed clips now (batch)
+  POST /api/decrypt/cancel    stop that batch after the files already in flight
   POST /api/telemetry_all     extract SEI telemetry for all plain clips missing it (batch)
   GET  /api/trips             clips grouped into trips (contiguous drives per vehicle)
   GET  /api/analytics         storage/clip/trip/event stats (cached 60s)
@@ -73,6 +74,12 @@ _thumb_job = {"running": False, "done": 0, "total": 0}
 _thumb_guard = threading.Lock()
 _tel_job = {"running": False, "done": 0, "total": 0}
 _tel_guard = threading.Lock()
+_dec_job = {"running": False, "done": 0, "total": 0, "errors": 0, "deleting": False,
+            "cancelled": False, "skipped": 0}
+_dec_guard = threading.Lock()
+# Set by /api/decrypt/cancel. Files already being decrypted finish — a clip is
+# never left half-written — but nothing new is started.
+_dec_cancel = threading.Event()
 _analytics_cache = {"t": 0.0, "data": None}
 _trips_cache = {"t": 0.0, "data": None}
 # Guards both derived caches and the set of builds currently in flight.
@@ -590,13 +597,15 @@ def counts(clips):
 def _trip_route_and_events(clips):
     route = []
     events = {}
+    seen_folders = set()      # one event per folder, not per one-minute segment
     for c in clips:
         track = _clip_track(c)
         if track:
             route.extend(track)
         elif c.get("gps_bounds"):
             route.append([c["gps_bounds"]["center_lat"], c["gps_bounds"]["center_lon"]])
-        if c.get("has_event") and c.get("reason"):
+        if c.get("has_event") and c.get("reason") and c["folder"] not in seen_folders:
+            seen_folders.add(c["folder"])
             events[c["reason"]] = events.get(c["reason"], 0) + 1
     return route, events
 
@@ -744,8 +753,15 @@ def compute_analytics():
         _cache_save("size")
     events_by_reason = {}
     clips_by_month = {}
+    # Count events, not clip segments. Tesla saves the rolling buffer as
+    # one-minute segments in a single folder per event, with one event.json for
+    # all of them — so counting per clip multiplied every event by the number of
+    # minutes it recorded (measured on a real library: 2,154 segments for 525
+    # actual events, a 4x overstatement).
+    seen_event_folders = set()
     for c in clips:
-        if c.get("has_event") and c.get("reason"):
+        if c.get("has_event") and c.get("reason") and c["folder"] not in seen_event_folders:
+            seen_event_folders.add(c["folder"])
             events_by_reason[c["reason"]] = events_by_reason.get(c["reason"], 0) + 1
         m = c["timestamp"][:7]
         clips_by_month[m] = clips_by_month.get(m, 0) + 1
@@ -754,8 +770,15 @@ def compute_analytics():
     return {
         "storage": {"by_folder": sorted(by_folder.values(), key=lambda x: x["folder"])},
         "clips": counts(clips),
+        # "total" counts every cluster of clips, most of which are parked Sentry
+        # sessions with no movement; the averages only make sense over the ones
+        # that actually moved. Both denominators are reported so the panel can
+        # say which is which — showing 410 next to a 6 km average invited the
+        # reading "410 x 6 km".
         "trips": {
             "total": len(trips),
+            "moving": len(distances),
+            "stationary": len(trips) - len(distances),
             "total_distance_km": round(sum(distances), 1),
             "avg_distance_km": round(sum(distances) / len(distances), 1) if distances else 0,
             "longest_km": round(max(distances), 1) if distances else 0,
@@ -834,11 +857,26 @@ def _key_for(sr, keys):
         return base64.b64decode(keys[eid])
     return None
 
-def _decrypt_cam(sr, keys):
+def _decrypt_cam(sr, keys, delete_original=False):
     fek = _key_for(sr, keys)
     if not fek:
         raise KeyError(f"no key for {sr}")
-    pipeline.decrypt_and_cache(src_abspath(sr), cache_abspath(sr), fek, embed_key=EMBED_KEY)
+    src, dst = src_abspath(sr), cache_abspath(sr)
+    pipeline.decrypt_and_cache(src, dst, fek, embed_key=EMBED_KEY)
+    if not delete_original:
+        return
+    # Irreversible: only ever after decrypt_and_cache() returned without raising
+    # (it validates the ftyp box and writes atomically), and only once the
+    # output is actually on disk and non-empty. The key stays in the store.
+    try:
+        if not os.path.isfile(dst) or os.path.getsize(dst) <= 0:
+            print(f"[delete] skipped {sr}: decrypted output missing/empty", flush=True)
+            return
+        os.remove(src)
+        _enc_cache.pop(sr, None)
+        print(f"[delete] removed encrypted original {sr}", flush=True)
+    except OSError as e:
+        print(f"[delete] {sr}: {e}", flush=True)
 
 def prepare_clip(cid):
     keys = keystore.load(KEYS_FILE)
@@ -871,6 +909,11 @@ def prepare_clip(cid):
     return {"ok": not errs, "errors": errs, "clip": _scan_one(cid, keys)}
 
 def ensure_all():
+    """Decrypt every clip that has a key. Deletes the encrypted originals
+    afterwards when delete_originals is on — see _decrypt_cam for the guards."""
+    global _dec_job
+    if _dec_job.get("running"):
+        return {"skipped": "busy"}
     keys = keystore.load(KEYS_FILE)
     # Uses the cached list, not a fresh _scan(): this runs from the scheduler
     # every interval_seconds, and forcing a full NAS re-scan each time is what
@@ -879,18 +922,40 @@ def ensure_all():
     jobs = [_sr_of_cam(c["folder"], c["timestamp"], cam)
             for c in clips_cached()
             for cam, info in c["cameras"].items() if info["state"] == "key"]
+    _dec_cancel.clear()
+    _dec_job = {"running": True, "done": 0, "total": len(jobs), "errors": 0,
+                "deleting": DELETE, "cancelled": False, "skipped": 0}
     def do(sr):
+        if _dec_cancel.is_set():
+            # Cancelled: drain the remaining work items without touching the NAS
+            with _dec_guard:
+                _dec_job["skipped"] += 1
+                _dec_job["done"] += 1
+            return
         try:
-            _decrypt_cam(sr, keys)
+            _decrypt_cam(sr, keys, delete_original=DELETE)
         except Exception as e:
             print(f"[decrypt] {sr}: {e}", flush=True)
-    if jobs:
-        with ThreadPoolExecutor(max_workers=4) as ex:
-            list(ex.map(do, jobs))
-    _meta_cache.clear()          # decrypting produces telemetry -> metadata and
-    _track_cache.clear()         # GPS tracks must be recomputed
-    invalidate()
-    return {"decrypted": len(jobs)}
+            with _dec_guard:
+                _dec_job["errors"] += 1
+        with _dec_guard:
+            _dec_job["done"] += 1
+    try:
+        if jobs:
+            with ThreadPoolExecutor(max_workers=4) as ex:
+                list(ex.map(do, jobs))
+            print(f"[decrypt] {_dec_job['done']-_dec_job['skipped']}/{_dec_job['total']} done, "
+                  f"{_dec_job['errors']} errors, {_dec_job['skipped']} skipped, "
+                  f"cancelled={_dec_cancel.is_set()}, delete_originals={DELETE}", flush=True)
+    finally:
+        _meta_cache.clear()      # decrypting produces telemetry -> metadata and
+        _track_cache.clear()     # GPS tracks must be recomputed
+        _dec_job["cancelled"] = _dec_cancel.is_set()
+        _dec_job["running"] = False
+        _dec_cancel.clear()
+        invalidate()
+    return {"decrypted": _dec_job["done"] - _dec_job["errors"] - _dec_job["skipped"],
+            "errors": _dec_job["errors"], "cancelled": _dec_job["cancelled"]}
 
 
 # ---------- Thumbnails ----------
@@ -1017,6 +1082,25 @@ def gen_all_telemetry():
 
 
 # ---------- Direct API ----------
+def pending_key_items():
+    """Wrapped-key items for every encrypted file that still has no key.
+
+    Candidates come from the index, where 'locked' already means *encrypted and
+    keyless*. keybridge.scan_items() instead globs the whole tree and reads an
+    8 KB header from every media file missing from the key store — which is
+    every plain clip too, since those are never in it. On a library with 8,596
+    plain files that was ~8,900 SMB reads to find 273, repeated every cycle.
+    """
+    files = []
+    for c in clips_cached():
+        for cam, info in c["cameras"].items():
+            if info["state"] == "locked":
+                sr = _sr_of_cam(c["folder"], c["timestamp"], cam)
+                files.append((src_abspath(sr), enc_id(sr)))
+    _dbg(f"pending_key_items: {len(files)} locked files (no full-tree scan)")
+    return keybridge.items_for(files)
+
+
 def api_fetch(items):
     global _last_api
     if not DIRECT_API:
@@ -1048,7 +1132,7 @@ def run_cycle(do_fetch=True, do_decrypt=None):
     _busy = True
     try:
         if do_fetch and DIRECT_API and auth.get_access_token():
-            items = keybridge.scan_items(SRC_DIR, keystore.load(KEYS_FILE))
+            items = pending_key_items()
             if items:
                 r = api_fetch(items)
                 print(f"[fetch] {len(items)} offen, +{r.get('got',0)} Keys ({r.get('msg')})", flush=True)
@@ -1183,6 +1267,8 @@ class H(BaseHTTPRequestHandler):
             st["last_api"] = _last_api
             st["thumb_job"] = _thumb_job
             st["tel_job"] = _tel_job
+            st["dec_job"] = _dec_job
+            st["delete_originals"] = DELETE
             st["scan_job"] = _scan_job
             # False until the first scan has produced a list — lets the UI tell
             # "still indexing" apart from "genuinely no clips on the share"
@@ -1210,7 +1296,7 @@ class H(BaseHTTPRequestHandler):
         if path == "/api/analytics":
             return self._send(200, analytics_cached())
         if path == "/api/pending.json":
-            items = keybridge.scan_items(SRC_DIR, keystore.load(KEYS_FILE))
+            items = pending_key_items()
             return self._send(200, {"items": items}, "application/json",
                               {"Content-Disposition": 'attachment; filename="pending_items.json"'})
         if path == "/api/login/url":
@@ -1285,6 +1371,9 @@ class H(BaseHTTPRequestHandler):
         if path == "/api/decrypt":
             bg(ensure_all)
             return self._send(200, {"ok": True})
+        if path == "/api/decrypt/cancel":
+            _dec_cancel.set()
+            return self._send(200, {"ok": True, "cancelling": _dec_job.get("running", False)})
         if path == "/api/thumbs_all":
             bg(gen_all_thumbs)
             return self._send(200, {"ok": True})

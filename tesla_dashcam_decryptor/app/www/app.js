@@ -78,6 +78,10 @@ async function refreshStatus(){
     $("#loginbox").style.display=li.logged_in?"none":"block";
     let api=s.last_api||{}; if(api.ok===false) $("#lmsg").textContent="Direct API: "+api.msg; else if(api.ok&&api.got) $("#lmsg").textContent="Direct API: "+api.got+" new keys.";
     $("#tstat").textContent=`Clips ${s.clips} · encrypted ${s.encrypted} · with key ${s.keyed} · no key ${s.need_keys}`;
+    const dn=$("#decDeleteNote");
+    if(dn) dn.innerHTML=s.delete_originals
+      ? '<b style="color:var(--bad)">delete_originals is on: the encrypted originals are deleted afterwards. This cannot be undone.</b>'
+      : 'The encrypted originals are kept (<code>delete_originals</code> is off).';
     return s;
   }catch(e){return null;}
 }
@@ -604,9 +608,16 @@ async function loadAnalytics(){
   }
 
   const c=a.clips, t=a.trips;
+  // "Trips" counts every cluster of clips, and most are parked Sentry sessions
+  // with no movement. The distance figures only cover the ones that moved, so
+  // the tile says how many that is instead of leaving "410" next to "6 km avg".
+  const moving=(t.moving!=null)?t.moving:null;
   const tiles=[
     ["🎞️ Clips",c.clips],["🔑 Decrypted",c.decrypted],["⏳ No key",c.need_keys],["📊 With telemetry",c.with_telemetry],
-    ["🚗 Trips",t.total],["📏 Total distance",t.total_distance_km+" km"],["📐 Avg trip",t.avg_distance_km+" km"],["🏁 Longest trip",t.longest_km+" km"],
+    ["🚗 Trips",t.total+(moving!=null?` <small>(${moving} driven)</small>`:"")],
+    ["📏 Total distance",t.total_distance_km+" km"],
+    ["📐 Avg driven trip",t.avg_distance_km+" km"],
+    ["🏁 Longest trip",t.longest_km+" km"],
   ];
   const tilesHtml=`<div class="statGrid">${tiles.map(([l,v])=>`<div class="statTile"><div class="stNum">${v}</div><div class="stLbl">${l}</div></div>`).join("")}</div>`;
 
@@ -674,6 +685,52 @@ async function boot(){
     $("#lmsg").textContent=r.ok?("Login OK"+(r.refresh?" – Refresh token received.":".")):("Error: "+r.error); refreshStatus();
   };
   $("#fetchbtn").onclick=async()=>{$("#lmsg").textContent="Fetching keys…";await fetch("api/fetch",{method:"POST"});setTimeout(()=>{refreshStatus();loadClips(true);},4000);};
+  $("#decryptbtn").onclick=async()=>{
+    const s=await fetch("api/status").then(r=>r.json()).catch(()=>null);
+    const n=s?s.need_decrypt:0, del=!!(s&&s.delete_originals);
+    if(!n){ $("#decmsg").textContent="Nothing to decrypt — every keyed clip is already done."; return; }
+    // Deleting the originals cannot be undone, so it is confirmed explicitly
+    // and the message spells out what is about to happen.
+    const msg=del
+      ? `Decrypt ${n} file(s) and then DELETE the encrypted originals from the NAS.\n\n`
+        +`The decrypted copy in the "decrypted" folder becomes your only copy. This cannot be undone.\n\nContinue?`
+      : `Decrypt ${n} file(s)? The encrypted originals are kept.`;
+    if(!confirm(msg)) return;
+    $("#decryptbtn").disabled=true; $("#decmsg").textContent="Starting…";
+    $("#deccancel").style.display="inline-block"; $("#deccancel").disabled=false;
+    await fetch("api/decrypt",{method:"POST"});
+    const poll=setInterval(async()=>{
+      const st=await fetch("api/status").then(r=>r.json()).catch(()=>null);
+      if(st&&st.dec_job){
+        const j=st.dec_job;
+        $("#decbar").classList.toggle("on",!!j.running);
+        if(j.running){
+          const notes=[];
+          if(j.errors) notes.push(`${j.errors} error(s)`);
+          if(j.skipped) notes.push(`${j.skipped} skipped (cancelling)`);
+          $("#decmsg").textContent=`${j.done}/${j.total}…`;
+          renderBar($("#decbar"),{label:j.deleting?"🔓 Decrypting and removing originals…":"🔓 Decrypting…",
+                                 done:j.done,total:j.total,note:notes.join(" · ")});
+        } else {
+          clearInterval(poll);
+          $("#decbar").innerHTML="";
+          const ok=j.done-j.errors-(j.skipped||0);
+          $("#decmsg").textContent=j.total>0
+            ? (j.cancelled?`Cancelled — ${ok}/${j.total} decrypted`:`${ok}/${j.total} decrypted`)
+              +(j.errors?` · ${j.errors} failed`:"")
+              +(j.deleting&&ok?" · originals removed":"")
+            : "nothing to do";
+          $("#decryptbtn").disabled=false;
+          $("#deccancel").style.display="none";
+          refreshStatus(); loadClips(true);
+        }
+      }
+    },1000);
+  };
+  $("#deccancel").onclick=async()=>{
+    $("#deccancel").disabled=true; $("#decmsg").textContent="Cancelling…";
+    await fetch("api/decrypt/cancel",{method:"POST"}).catch(()=>{});
+  };
   $("#thumbsbtn").onclick=async()=>{
     $("#thumbsbtn").disabled=true; $("#thumbmsg").textContent="Generating…";
     await fetch("api/thumbs_all",{method:"POST"});

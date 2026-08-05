@@ -50,8 +50,18 @@ pure local viewer without any Tesla account interaction at all.
 - **Per-camera fullscreen** — each video tile has a fullscreen button
 - **Thumbnail grid** — auto-generated or from Tesla's thumb.png
 - **Per-camera download** and full-clip ZIP export
-- **Batch operations** — bulk key fetch, bulk decrypt, bulk telemetry
-  extraction, bulk thumbnail generation
+- **Batch operations** — bulk key fetch, "Decrypt everything" (with a progress
+  bar and a cancel button; deletes the encrypted originals afterwards if
+  `delete_originals` is on, after confirming), bulk telemetry extraction, bulk
+  thumbnail generation
+
+## How Tesla stores clips
+
+Tesla saves the rolling buffer as **one-minute segments**, so a single event
+produces a folder with several clips — typically 4 for a Sentry trigger, up to
+11 for a manual save that keeps the preceding ~10 minutes. All of them share one
+`event.json`, which is why every segment of an event carries the 📅 badge. The
+Analytics event counts are per *event*, not per segment.
 
 ## How encryption works
 
@@ -122,7 +132,7 @@ does not, these options do nothing.
 |---|---|---|
 | `enable_direct_api` | `true` | Fetch the per-file keys straight from Tesla after a one-time login in the 🔑 panel. Turn off to use the browser bookmarklet instead. |
 | `auto_decrypt` | `true` | Decrypt clips in the background as soon as a key is available, instead of on demand when you open one. Costs disk space on the NAS but makes playback instant. |
-| `delete_originals` | `false` | **Deletes the encrypted originals** after a clip decrypts successfully. Frees space, but there is no undo — the decrypted copy in `dec_subpath` becomes your only copy. The key itself is kept either way. |
+| `delete_originals` | `false` | **Deletes the encrypted originals** after a clip decrypts successfully. Frees space, but there is no undo — the decrypted copy in `dec_subpath` becomes your only copy. The key itself is kept either way. An original is only removed once the decrypt succeeded *and* the decrypted file exists and is non-empty. Applies both to the background decryption and to the "Decrypt everything" button. |
 | `key_after_decrypt` | `hidden` | `hidden` keeps keys in the key store only. `embed` also writes the key into an ignored `uuid` box inside the decrypted MP4, so the file stays decryptable on its own — convenient, but anyone with the file then has its key. |
 | `dec_subpath` | `decrypted` | Folder inside the share for decrypted clips, thumbnails and extracted telemetry. |
 | `enc_subpath` | *(empty)* | Legacy. Encrypted files are detected by their eCryptfs header wherever they are, so leave this empty unless you deliberately keep them in a separate folder. |
