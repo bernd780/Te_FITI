@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.4
+- The first index now reads **one file per clip instead of six**. A clip's six camera files are written by the car in a single pass and always share an encryption state, so probing one and applying the answer to the rest cuts NAS round trips by 6x — which is what actually decides how long indexing takes
+- Reverts the parallel probing added in 0.7.3 to a single reader. Measured on a real SMB share it made things *worse*, not better: 8 parallel readers managed 5.0 files/s where a single one managed 8.3 — the mount serialises the requests and the extra concurrency only adds contention. (The 0.7.3 benchmark that suggested an 8x speedup used a simulated delay, which parallelises perfectly and real CIFS round trips do not.) `ENC_WORKERS` remains available for shares that do benefit, defaulting to 1
+- A file that cannot be read is no longer cached as "not encrypted". The probe falls through to the clip's other cameras, and if none can be read the clip is simply retried on the next scan
+
 ## 0.7.3
 - The eCryptfs classification of new files now runs across 8 threads instead of one. It is pure network latency — 28 bytes per file — so concurrency, not bandwidth, decides how long a first index takes. Measured under simulated NAS latency: 8x faster, near-linear; on a 13,625-file share this turns ~28 minutes into a few
 - Fix (introduced in 0.7.2): static assets were served with `Cache-Control: max-age=86400`, so after an add-on update browsers kept running the *previous* `app.js` for up to a day. They now revalidate via `ETag`/`304`, and the asset URLs carry a `?v=` matching the add-on version so already-cached copies are bypassed immediately

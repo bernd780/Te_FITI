@@ -29,8 +29,8 @@ const SCAN_PHASES={
               note:j.done+" folders"}),
   // "index" only counts files never seen before — everything else is a cache
   // hit and costs no NAS access at all.
-  index: j=>({label:"🔍 Inspecting new clip files…", done:j.done, total:j.total,
-              note:"reading file headers"}),
+  index: j=>({label:"🔍 Inspecting new clips…", done:j.done, total:j.total,
+              note:"one file read per clip"}),
   meta:  j=>({label:"📊 Reading telemetry & events…", done:j.done, total:j.total,
               note:j.new?j.new+" new clips":"all from cache"})
 };

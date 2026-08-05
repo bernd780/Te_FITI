@@ -54,7 +54,7 @@ DEBUG = False
 LIST_TTL = 120
 TRIP_GAP_MIN = 20     # minutes of inactivity that ends a trip
 ANALYTICS_TTL = 300
-ENC_WORKERS = 8       # concurrent eCryptfs header reads; SMB latency-bound
+ENC_WORKERS = 1       # parallel probes; >1 measured slower on SMB, see _classify_new
 STATIC_CTYPES = {".css": "text/css", ".js": "application/javascript",
                  ".png": "image/png", ".jpg": "image/jpeg", ".svg": "image/svg+xml",
                  ".woff2": "font/woff2", ".map": "application/json"}
@@ -198,12 +198,14 @@ def _listdir_tree(root, report=False):
 
 # ---------- Encrypted file detection (persistently cached) ----------
 def _read_enc_header(abspath):
-    """Does this file carry an eCryptfs header? One 28-byte read over SMB."""
+    """Does this file carry an eCryptfs header? One 28-byte read over SMB.
+    Returns None if the file could not be read, so a transient failure is not
+    cached as a definitive "not encrypted"."""
     try:
         with open(abspath, "rb") as f:
             return is_ecryptfs(f.read(28))
     except Exception:
-        return False
+        return None
 
 
 def _is_encrypted(abspath, sr):
@@ -213,38 +215,69 @@ def _is_encrypted(abspath, sr):
     if sr in _enc_cache:
         return _enc_cache[sr]
     result = _read_enc_header(abspath)
+    if result is None:
+        return False        # unreadable right now; do not cache the guess
     _enc_cache[sr] = result
     return result
 
 
-def _classify_new(mp4s):
-    """Read the eCryptfs header of every file not classified before, in
-    parallel.
+def _probe_clip(srs):
+    """Encryption state of a clip, from the first of its files that can be read.
+    Falls back through the other cameras so one unreadable file does not
+    misclassify the whole clip. None if none of them could be read."""
+    for sr in srs:
+        val = _read_enc_header(src_abspath(sr))
+        if val is not None:
+            return val
+    return None
 
-    This is the one genuinely slow part of a first index, and it is pure
-    network latency — the payload is 28 bytes per file, so concurrency rather
-    than bandwidth decides how long it takes. Measured single-threaded on a
-    13,625-file share: ~8 files/s. Results are applied on this thread, so
-    _enc_cache is only ever mutated from one place.
+
+def _classify_new(mp4s):
+    """Determine the encryption state of clips not seen before.
+
+    Samples ONE camera file per clip and applies the answer to all six. The
+    car writes a clip's cameras in a single pass, so they always share an
+    encryption state — and this is a 6x cut in NAS round trips, which is what
+    actually decides how long a first index takes.
+
+    Reading fewer files is the lever here, not reading them faster: measured on
+    a real SMB share, 8 parallel readers came out *slower* (5.0 files/s) than a
+    single one (8.3 files/s) — the mount serialises the requests and the extra
+    concurrency only adds contention. ENC_WORKERS stays available for shares
+    that do benefit, but the default is deliberately 1.
     """
-    todo = [sr for sr, _ in mp4s if sr not in _enc_cache]
-    if not todo:
+    by_clip = {}
+    for sr, m in mp4s:
+        if sr not in _enc_cache:
+            by_clip.setdefault(posixpath.dirname(sr) + "|" + m.group(1), []).append(sr)
+    if not by_clip:
         return 0
-    _scan_job.update({"phase": "index", "done": 0, "total": len(todo), "new": len(todo)})
-    done = 0
-    with ThreadPoolExecutor(max_workers=ENC_WORKERS) as ex:
-        for i, (sr, enc) in enumerate(
-                zip(todo, ex.map(lambda s: _read_enc_header(src_abspath(s)), todo)), 1):
-            _enc_cache[sr] = enc
+    clips = sorted(by_clip)
+    _scan_job.update({"phase": "index", "done": 0, "total": len(clips), "new": len(clips)})
+
+    def probe(cid):
+        srs = by_clip[cid]
+        # prefer the front camera: it is the one that always exists
+        srs.sort(key=lambda s: ("-front.mp4" not in s.lower(), s))
+        return _probe_clip(srs)
+
+    done = files = 0
+    with ThreadPoolExecutor(max_workers=max(1, ENC_WORKERS)) as ex:
+        for i, (cid, enc) in enumerate(zip(clips, ex.map(probe, clips)), 1):
+            if enc is not None:
+                for sr in by_clip[cid]:
+                    _enc_cache[sr] = enc
+                    files += 1
             done = i
-            if not i % 50:
+            if not i % 10:
                 _scan_job["done"] = i
-            if not i % 500:
+            if not i % 200:
                 # Checkpoint: a restart during a long first index must not throw
                 # away everything classified so far.
                 _cache_save("enc")
     _scan_job["done"] = done
-    return done
+    _dbg(f"_classify_new: {done} clips probed -> {files} files classified")
+    return files
 
 # ---------- Clip state ----------
 def _cam_state(sr, keys, out_files=None):
