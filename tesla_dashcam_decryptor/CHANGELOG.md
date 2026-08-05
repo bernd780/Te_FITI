@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.2
+- Fix (regression in 0.7.1): the scheduler and the batch jobs called `_scan()` directly, bypassing the single-flight guard, so with `auto_decrypt` on a **second** full scan started every `interval_seconds` on top of the one already running. Several scans then competed for the same SMB mount and overwrote each other's progress — measured on a 13,625-file share, the index build dropped from ~7 files/s to ~1.25 files/s. They now use the cached list, and `_scan()` additionally serialises itself
+- The eCryptfs classification is checkpointed to `.enc_cache.json` every 500 files. Previously the cache was only written when a scan finished, so restarting the add-on during a long first index threw away all of the work
+- Leaflet 1.9.4 (JS, CSS and its images) now ships inside the add-on image instead of being pulled from `unpkg.com`. It was a render-blocking `<script>` in `<head>`, so an HA host without internet — or a slow CDN — stalled the whole viewer before any of its own code ran. It is now also `defer`red, and still executes before `app.js`
+- Static files are served with a `Cache-Control` header, correct content types for images, and support sub-paths (`static/images/…`) with an explicit path-traversal check
+
 ## 0.7.1
 - Fix: loading clips could take minutes (or appear to hang entirely) on installs with a lot of footage on a network share. `/api/status` and `/api/clips` re-scanned the whole TeslaCam tree from scratch every 15 seconds, and each scan opened *every* MP4 over SMB to read its 28-byte eCryptfs header — thousands of network round trips per request, with all other requests queued behind the scan lock
 - The scan now walks each directory once with `os.scandir` (one SMB round trip per folder) instead of issuing an `os.path.exists()` per camera file

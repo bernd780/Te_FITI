@@ -9,8 +9,12 @@
   if(!t) t = matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
   document.documentElement.dataset.theme = t;
 })();</script>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<!-- Leaflet 1.9.4, shipped inside the add-on image: the viewer must not depend
+     on a CDN being reachable from the HA host (it used to block page parsing
+     on unpkg.com). Deferred so it does not block parsing, but still executes
+     before app.js — deferred scripts run in document order. -->
+<link rel="stylesheet" href="static/leaflet.css"/>
+<script src="static/leaflet.js" defer></script>
 <link rel="stylesheet" href="static/style.css">
 </head>
 <body>

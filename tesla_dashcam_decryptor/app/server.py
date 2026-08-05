@@ -53,6 +53,9 @@ DEBUG = False
 LIST_TTL = 120
 TRIP_GAP_MIN = 20     # minutes of inactivity that ends a trip
 ANALYTICS_TTL = 300
+STATIC_CTYPES = {".css": "text/css", ".js": "application/javascript",
+                 ".png": "image/png", ".jpg": "image/jpeg", ".svg": "image/svg+xml",
+                 ".woff2": "font/woff2", ".map": "application/json"}
 TS_RE = re.compile(r"(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})-(.+)\.mp4$", re.I)
 CAM_NAMES = ("front", "back", "left_repeater", "right_repeater", "left_pillar", "right_pillar")
 
@@ -74,6 +77,11 @@ _trips_cache = {"t": 0.0, "data": None}
 _trips_guard = threading.Lock()
 _rescan_running = False
 _rescan_guard = threading.Lock()
+# Serialises _scan() itself. _rescan_async() is single-flight, but the scheduler
+# and the batch jobs call _scan() directly; without this they would start a
+# second full scan on top of a running one, and two scans fighting over the same
+# SMB mount are far slower than one (measured: 7 files/s down to 1.25).
+_scan_lock = threading.Lock()
 # Progress of the running scan, polled by the UI via /api/status. "phase" is one
 # of walk (listing folders), index (per-file state), meta (telemetry/event JSON).
 _scan_job = {"running": False, "phase": "", "done": 0, "total": 0,
@@ -326,6 +334,11 @@ def _prune_caches(src_files, clip_ids):
 
 
 def _scan(keys=None):
+    with _scan_lock:
+        return _scan_locked(keys)
+
+
+def _scan_locked(keys=None):
     t0 = time.time()
     _scan_job.update({"running": True, "phase": "walk", "done": 0, "total": 0,
                       "clips": 0, "new": 0, "started": t0})
@@ -358,6 +371,11 @@ def _scan(keys=None):
                                       "cameras": {}, "telemetry": None})
             if sr not in _enc_cache:
                 enc_misses += 1
+                if not enc_misses % 500:
+                    # Checkpoint: classifying a large backlog takes a long time
+                    # on a NAS, and without this an add-on restart in the middle
+                    # would throw all of it away and start from zero.
+                    _cache_save("enc")
             c["cameras"][cam] = _cam_state(sr, keys, out_files)
             if cam == "front":
                 telsr = _telsr(folder, ts)
@@ -703,8 +721,12 @@ def prepare_clip(cid):
 
 def ensure_all():
     keys = keystore.load(KEYS_FILE)
+    # Uses the cached list, not a fresh _scan(): this runs from the scheduler
+    # every interval_seconds, and forcing a full NAS re-scan each time is what
+    # made the index build crawl. A list up to LIST_TTL old only means a clip
+    # gets decrypted one cycle later.
     jobs = [_sr_of_cam(c["folder"], c["timestamp"], cam)
-            for c in _scan(keys)
+            for c in clips_cached()
             for cam, info in c["cameras"].items() if info["state"] == "key"]
     def do(sr):
         try:
@@ -786,7 +808,7 @@ def gen_all_thumbs():
     global _thumb_job
     if _thumb_job.get("running"):
         return
-    clips = _scan()
+    clips = clips_cached()
     targets = []
     for c in clips:
         if c.get("has_data"):  # telemetry OR event present
@@ -816,7 +838,7 @@ def gen_all_telemetry():
     global _tel_job
     if _tel_job.get("running"):
         return
-    clips = _scan()
+    clips = clips_cached()
     targets = []
     for c in clips:
         front = c["cameras"].get("front")
@@ -979,10 +1001,17 @@ class H(BaseHTTPRequestHandler):
             return self._file(os.path.join(WWW, "index.html"), "text/html",
                               {"Cache-Control": "no-cache, no-store, must-revalidate"})
         if path.startswith("/static/"):
-            fp = os.path.join(WWW, os.path.basename(path))
+            # Sub-paths are allowed (leaflet.css pulls images/*.png relative to
+            # itself), so the traversal guard is an explicit containment check
+            # rather than the basename() flattening this used to rely on.
+            rel = posixpath.normpath(path[len("/static/"):]).lstrip("/")
+            fp = os.path.normpath(os.path.join(WWW, rel))
+            if not fp.startswith(os.path.normpath(WWW) + os.sep):
+                return self._send(403, {"error": "forbidden"})
             if os.path.isfile(fp):
-                ct = "text/css" if fp.endswith(".css") else "application/javascript"
-                return self._file(fp, ct)
+                return self._file(fp, STATIC_CTYPES.get(os.path.splitext(fp)[1].lower(),
+                                                        "application/octet-stream"),
+                                  {"Cache-Control": "max-age=86400"})
             return self._send(404, {"error": "not found"})
         if path == "/api/status":
             st = counts(clips_cached())
