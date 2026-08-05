@@ -17,6 +17,7 @@ ffmpeg at the event timestamp (event.json) or ~1 s and caches it.
   GET  /api/status            counters + login + busy + last_api
   GET  /api/clips             ALL clips incl. camera states + has_tel
   GET  /api/thumb?id=         thumbnail (png/jpg), generated/cached
+  GET  /api/event?id=         event.json data (seek offset, GPS, reason)
   POST /api/prepare           {id} -> decrypt clip on demand, return fresh clip
   POST /api/fetch             Direct API: fetch missing keys now
   POST /api/decrypt           decrypt all keyed clips now (batch)
@@ -53,6 +54,7 @@ DEBUG = False
 LIST_TTL = 120
 TRIP_GAP_MIN = 20     # minutes of inactivity that ends a trip
 ANALYTICS_TTL = 300
+ENC_WORKERS = 8       # concurrent eCryptfs header reads; SMB latency-bound
 STATIC_CTYPES = {".css": "text/css", ".js": "application/javascript",
                  ".png": "image/png", ".jpg": "image/jpeg", ".svg": "image/svg+xml",
                  ".woff2": "font/woff2", ".map": "application/json"}
@@ -195,20 +197,54 @@ def _listdir_tree(root, report=False):
 
 
 # ---------- Encrypted file detection (persistently cached) ----------
-def _is_encrypted(abspath, sr):
-    """Whether a file carries an eCryptfs header. The 28-byte read is the single
-    most expensive part of a scan over SMB, so the answer is cached to disk and
-    only ever computed once per file."""
-    if sr in _enc_cache:
-        return _enc_cache[sr]
+def _read_enc_header(abspath):
+    """Does this file carry an eCryptfs header? One 28-byte read over SMB."""
     try:
         with open(abspath, "rb") as f:
-            head = f.read(28)
-        result = is_ecryptfs(head)
+            return is_ecryptfs(f.read(28))
     except Exception:
-        result = False
+        return False
+
+
+def _is_encrypted(abspath, sr):
+    """Cached answer for a single file. Normally a dict hit — _classify_new()
+    has already filled the cache for everything the current scan will ask
+    about; this only reads from disk on the single-clip paths."""
+    if sr in _enc_cache:
+        return _enc_cache[sr]
+    result = _read_enc_header(abspath)
     _enc_cache[sr] = result
     return result
+
+
+def _classify_new(mp4s):
+    """Read the eCryptfs header of every file not classified before, in
+    parallel.
+
+    This is the one genuinely slow part of a first index, and it is pure
+    network latency — the payload is 28 bytes per file, so concurrency rather
+    than bandwidth decides how long it takes. Measured single-threaded on a
+    13,625-file share: ~8 files/s. Results are applied on this thread, so
+    _enc_cache is only ever mutated from one place.
+    """
+    todo = [sr for sr, _ in mp4s if sr not in _enc_cache]
+    if not todo:
+        return 0
+    _scan_job.update({"phase": "index", "done": 0, "total": len(todo), "new": len(todo)})
+    done = 0
+    with ThreadPoolExecutor(max_workers=ENC_WORKERS) as ex:
+        for i, (sr, enc) in enumerate(
+                zip(todo, ex.map(lambda s: _read_enc_header(src_abspath(s)), todo)), 1):
+            _enc_cache[sr] = enc
+            done = i
+            if not i % 50:
+                _scan_job["done"] = i
+            if not i % 500:
+                # Checkpoint: a restart during a long first index must not throw
+                # away everything classified so far.
+                _cache_save("enc")
+    _scan_job["done"] = done
+    return done
 
 # ---------- Clip state ----------
 def _cam_state(sr, keys, out_files=None):
@@ -353,12 +389,11 @@ def _scan_locked(keys=None):
 
         mp4s = [(sr, m) for sr, m in
                 ((sr, TS_RE.search(posixpath.basename(sr))) for sr in src_files) if m]
-        # Files never classified before are the only ones costing an SMB read, so
-        # they are what makes this phase slow — report them as the "new" count.
-        _scan_job.update({"phase": "index", "done": 0, "total": len(mp4s), "clips": 0,
-                          "new": sum(1 for sr, _ in mp4s if sr not in _enc_cache)})
+        # Classify unseen files up front and in parallel; afterwards the loop
+        # below is pure dict lookups and touches the NAS no further.
+        enc_misses = _classify_new(mp4s)
+        t_enc = time.time()
 
-        enc_misses = 0
         clips = {}
         for i, (sr, m) in enumerate(mp4s):
             ts, cam = m.group(1), m.group(2).lower()
@@ -369,21 +404,11 @@ def _scan_locked(keys=None):
             c = clips.setdefault(ck, {"id": ck, "folder": folder, "timestamp": ts,
                                       "source": top, "vehicle": vehicle,
                                       "cameras": {}, "telemetry": None})
-            if sr not in _enc_cache:
-                enc_misses += 1
-                if not enc_misses % 500:
-                    # Checkpoint: classifying a large backlog takes a long time
-                    # on a NAS, and without this an add-on restart in the middle
-                    # would throw all of it away and start from zero.
-                    _cache_save("enc")
             c["cameras"][cam] = _cam_state(sr, keys, out_files)
             if cam == "front":
                 telsr = _telsr(folder, ts)
                 if telsr in out_files:
                     c["telemetry"] = "media/" + telsr
-            if not i % 25:
-                _scan_job["done"] = i
-                _scan_job["clips"] = len(clips)
         t_state = time.time()
 
         meta_misses = sum(1 for cid in clips
@@ -404,8 +429,9 @@ def _scan_locked(keys=None):
             # rescan must not rewrite megabytes of JSON to the SD card every time.
             _cache_save("enc", "meta")
         _dbg(f"_scan: {len(out)} clips (walk {t_walk-t0:.3f}s / {len(src_files)} src + "
-             f"{len(out_files)} out files, state {t_state-t_walk:.3f}s with {enc_misses} "
-             f"header reads, {meta_misses} meta misses, {pruned} pruned, "
+             f"{len(out_files)} out files, classify {t_enc-t_walk:.3f}s for {enc_misses} "
+             f"new files across {ENC_WORKERS} workers, state {t_state-t_enc:.3f}s, "
+             f"{meta_misses} meta misses, {pruned} pruned, "
              f"finalize+save {time.time()-t_state:.3f}s, total {time.time()-t0:.3f}s)")
         return out
     finally:
@@ -1008,11 +1034,21 @@ class H(BaseHTTPRequestHandler):
             fp = os.path.normpath(os.path.join(WWW, rel))
             if not fp.startswith(os.path.normpath(WWW) + os.sep):
                 return self._send(403, {"error": "forbidden"})
-            if os.path.isfile(fp):
-                return self._file(fp, STATIC_CTYPES.get(os.path.splitext(fp)[1].lower(),
-                                                        "application/octet-stream"),
-                                  {"Cache-Control": "max-age=86400"})
-            return self._send(404, {"error": "not found"})
+            if not os.path.isfile(fp):
+                return self._send(404, {"error": "not found"})
+            # Revalidate rather than cache blindly: a plain max-age would leave
+            # browsers running the previous app.js for that long after an add-on
+            # update. With an ETag the check costs one 304 and stays correct.
+            st = os.stat(fp)
+            etag = '"%x-%x"' % (int(st.st_mtime), st.st_size)
+            if self.headers.get("If-None-Match") == etag:
+                self.send_response(304)
+                self.send_header("ETag", etag)
+                self.send_header("Cache-Control", "no-cache")
+                self.end_headers()
+                return
+            ct = STATIC_CTYPES.get(os.path.splitext(fp)[1].lower(), "application/octet-stream")
+            return self._file(fp, ct, {"ETag": etag, "Cache-Control": "no-cache"})
         if path == "/api/status":
             st = counts(clips_cached())
             st["busy"] = _busy
@@ -1041,14 +1077,6 @@ class H(BaseHTTPRequestHandler):
             if data is None:
                 return self._send(404, {"error": "no event"})
             return self._send(200, data)
-        if path == "/api/all_gps":
-            clips = clips_cached()
-            pts = []
-            for c in clips:
-                gb = c.get("gps_bounds")
-                if gb:
-                    pts.append([gb["center_lat"], gb["center_lon"], c["id"]])
-            return self._send(200, {"points": pts})
         if path == "/api/trips":
             return self._send(200, trips_cached())
         if path == "/api/analytics":

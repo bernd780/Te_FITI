@@ -13,9 +13,13 @@
      on a CDN being reachable from the HA host (it used to block page parsing
      on unpkg.com). Deferred so it does not block parsing, but still executes
      before app.js — deferred scripts run in document order. -->
-<link rel="stylesheet" href="static/leaflet.css"/>
-<script src="static/leaflet.js" defer></script>
-<link rel="stylesheet" href="static/style.css">
+<!-- ?v= must be bumped with the add-on version. index.html itself is served
+     no-store, so changing it here is what forces browsers onto the new assets;
+     0.7.2 shipped them with a long max-age and would otherwise keep serving
+     the previous app.js from cache for a day after an update. -->
+<link rel="stylesheet" href="static/leaflet.css?v=0.7.3"/>
+<script src="static/leaflet.js?v=0.7.3" defer></script>
+<link rel="stylesheet" href="static/style.css?v=0.7.3">
 </head>
 <body>
 <header>
@@ -162,6 +166,6 @@
   </div>
 </div>
 
-<script src="static/app.js" defer></script>
+<script src="static/app.js?v=0.7.3" defer></script>
 </body>
 </html>

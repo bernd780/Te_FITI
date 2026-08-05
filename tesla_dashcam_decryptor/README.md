@@ -81,26 +81,74 @@ In the clip browser, encrypted clips are marked with a lock icon:
 
 ## Configuration
 
-| Option | Description |
-|---|---|
-| `smb_host` | IP address of your NAS |
-| `smb_share` | SMB share name (e.g. `Tesla_Video`) |
-| `clips_subpath` | Root of the TeslaCam tree (e.g. `TeslaCam`). Encrypted files are auto-detected by their eCryptfs header — no need to separate them into a specific folder. |
-| `enc_subpath` | *(optional)* Legacy: explicit path to encrypted clips. Leave empty for auto-detection. |
-| `dec_subpath` | *(optional)* Output folder for decrypted clips (default: `decrypted`) |
-| `smb_username` | SMB username |
-| `smb_password` | SMB password |
-| `smb_version` | SMB protocol version (default: `3.0`) |
-| `interval_seconds` | Polling interval for new clips (default: `300`) |
-| `auto_decrypt` | Automatically decrypt clips when a key is available |
-| `enable_direct_api` | Use the Tesla API directly (requires one-time login) |
-| `key_after_decrypt` | What to do with the FEK after decryption: `hidden` (default) or `embed` |
-| `delete_originals` | Delete encrypted originals after successful decryption |
-| `debug_logging` | Verbose add-on log: per-request timing, scan/analytics duration, metadata-cache hit/miss counts. Off by default. |
+Only the first three options normally need changing. Everything else has a
+working default.
+
+### Connecting to your NAS
+
+Te_FITI does not copy your footage anywhere — it mounts the share your Tesla
+already writes to and reads it in place.
+
+| Option | Default | Description |
+|---|---|---|
+| `smb_host` | — | IP address of your NAS, e.g. `192.168.1.100`. Use the IP rather than a hostname; name resolution inside add-on containers is not guaranteed. |
+| `smb_share` | `Tesla_Video` | The share name only, **not** a path. For `\\192.168.1.100\Tesla_Video`, this is `Tesla_Video`. |
+| `clips_subpath` | `TeslaCam` | Where the TeslaCam tree sits *inside* the share. This is the folder that contains `RecentClips`, `SavedClips` and `SentryClips`. Leave empty if they sit at the root of the share. |
+| `smb_username` | *(empty)* | Leave both credentials empty to mount as guest. |
+| `smb_password` | *(empty)* | Stored in the Home Assistant add-on options; it is passed to the mount and never leaves your machine. |
+| `smb_domain` | *(empty)* | Only for Windows/AD shares that require a domain. |
+| `smb_version` | `3.0` | Lower this only if the mount fails — old NAS firmware may need `2.1`. Avoid `1.0` unless you have no choice; SMBv1 is insecure. |
+
+If the add-on fails to start, the mount is almost always the cause. The log
+prints the exact CIFS error from `dmesg`, which usually names the problem
+(wrong password, unknown share, unsupported protocol version).
+
+### Vehicle folders
+
+If `clips_subpath` contains one folder per car (e.g. `TeslaCam/Tesla1`,
+`TeslaCam/Tesla2`), the viewer groups clips per vehicle automatically. No
+configuration needed — it keys off the folder name starting with `Tesla`.
+
+### Decryption
+
+Relevant only if your car encrypts clips (firmware 2026.20+). On a car that
+does not, these options do nothing.
+
+| Option | Default | Description |
+|---|---|---|
+| `enable_direct_api` | `true` | Fetch the per-file keys straight from Tesla after a one-time login in the 🔑 panel. Turn off to use the browser bookmarklet instead. |
+| `auto_decrypt` | `true` | Decrypt clips in the background as soon as a key is available, instead of on demand when you open one. Costs disk space on the NAS but makes playback instant. |
+| `delete_originals` | `false` | **Deletes the encrypted originals** after a clip decrypts successfully. Frees space, but there is no undo — the decrypted copy in `dec_subpath` becomes your only copy. The key itself is kept either way. |
+| `key_after_decrypt` | `hidden` | `hidden` keeps keys in the key store only. `embed` also writes the key into an ignored `uuid` box inside the decrypted MP4, so the file stays decryptable on its own — convenient, but anyone with the file then has its key. |
+| `dec_subpath` | `decrypted` | Folder inside the share for decrypted clips, thumbnails and extracted telemetry. |
+| `enc_subpath` | *(empty)* | Legacy. Encrypted files are detected by their eCryptfs header wherever they are, so leave this empty unless you deliberately keep them in a separate folder. |
+
+### Behaviour and diagnostics
+
+| Option | Default | Description |
+|---|---|---|
+| `interval_seconds` | `300` | How often the add-on looks for new clips, fetches missing keys and (with `auto_decrypt`) decrypts them. Lower means new clips appear sooner; it does not affect how fast the viewer loads. |
+| `debug_logging` | `false` | Verbose log: per-request timing, scan duration split by phase, and cache hit/miss counts. Turn this on first when something is slow — it shows whether time goes into the directory walk, classifying new files, or reading metadata. |
+
+### What the first start does
+
+On first run — and after adding a large batch of clips — the add-on builds an
+index of the share. It reads a 28-byte header from each new file to tell
+encrypted clips from plain ones, and caches the answer in `/data`, so this
+happens **once per file, ever**.
+
+The viewer stays usable throughout: a progress bar shows which phase is
+running, and the clip list appears by itself when the index is ready. On a
+share with ~13,000 files expect a few minutes; later starts are immediate
+because everything comes from the cache.
 
 ## Privacy
 
 - All keys and decrypted videos stay on your own hardware.
-- The only external communication is the one-time key fetch from Tesla
-  (and map tiles from CartoDB/OpenStreetMap when using the GPS map).
+- The viewer itself loads nothing from the internet: the map library ships
+  inside the add-on image, so the interface works on a host with no internet
+  access at all.
+- External communication is limited to two things: the one-time key fetch from
+  Tesla, and map tiles from CartoDB/OpenStreetMap — and the tiles are only
+  requested once you actually open the Map tab.
 - Intended only for your own vehicle recordings with your own Tesla account.

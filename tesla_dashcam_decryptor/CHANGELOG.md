@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.3
+- The eCryptfs classification of new files now runs across 8 threads instead of one. It is pure network latency — 28 bytes per file — so concurrency, not bandwidth, decides how long a first index takes. Measured under simulated NAS latency: 8x faster, near-linear; on a 13,625-file share this turns ~28 minutes into a few
+- Fix (introduced in 0.7.2): static assets were served with `Cache-Control: max-age=86400`, so after an add-on update browsers kept running the *previous* `app.js` for up to a day. They now revalidate via `ETag`/`304`, and the asset URLs carry a `?v=` matching the add-on version so already-cached copies are bypassed immediately
+- The map is no longer built during page load — it is created the first time the Map tab is opened. Loading the viewer now issues **no external requests at all**; map tiles are fetched only once you look at the map
+- `api/login/url` is no longer awaited during start-up; it only fills the login link in the Keys panel and was delaying the status line and the clip list
+- Removed `/api/all_gps`, dead since 0.6.0 — the map reads clip positions straight from `/api/clips`
+- README: the add-on options are now documented in full, grouped by what they affect (NAS connection, decryption, behaviour), each with its default, plus a note on what the first start actually does
+
 ## 0.7.2
 - Fix (regression in 0.7.1): the scheduler and the batch jobs called `_scan()` directly, bypassing the single-flight guard, so with `auto_decrypt` on a **second** full scan started every `interval_seconds` on top of the one already running. Several scans then competed for the same SMB mount and overwrote each other's progress — measured on a 13,625-file share, the index build dropped from ~7 files/s to ~1.25 files/s. They now use the cached list, and `_scan()` additionally serialises itself
 - The eCryptfs classification is checkpointed to `.enc_cache.json` every 500 files. Previously the cache was only written when a scan finished, so restarting the add-on during a long first index threw away all of the work

@@ -27,8 +27,10 @@ function renderBar(el,{label,done,total,note}){
 const SCAN_PHASES={
   walk:  j=>({label:"📂 Indexing folders on the NAS…", done:j.done, total:0,
               note:j.done+" folders"}),
-  index: j=>({label:"🎞️ Reading clip states…", done:j.done, total:j.total,
-              note:j.new?j.new+" new files to inspect":"all from cache"}),
+  // "index" only counts files never seen before — everything else is a cache
+  // hit and costs no NAS access at all.
+  index: j=>({label:"🔍 Inspecting new clip files…", done:j.done, total:j.total,
+              note:"reading file headers"}),
   meta:  j=>({label:"📊 Reading telemetry & events…", done:j.done, total:j.total,
               note:j.new?j.new+" new clips":"all from cache"})
 };
@@ -73,6 +75,9 @@ async function loadClips(keepActive){
   if(!keepActive) $("#cliplist").innerHTML='<div class="loading">⏳ Loading clips…</div>';
   allClips=await fetch("api/clips").then(r=>r.json()).catch(()=>[]);
   buildSidebar();
+  // No-op until the map exists; keeps the markers in step when the list is
+  // reloaded (scan finished, keys fetched) while the Map tab is open.
+  renderEventMarkers();
   if(keepActive&&activeId){const c=allClips.find(x=>x.id===activeId); if(c) markActive(activeId);}
 }
 function clipState(c){ return c.has_locked&&!c.playable&&!c.needs_prepare ? "locked" : (c.needs_prepare?"key":"ready"); }
@@ -517,7 +522,18 @@ function switchView(name){
   currentView=name;
   document.querySelectorAll(".view").forEach(v=>v.classList.toggle("active",v.id==="view-"+name));
   document.querySelectorAll(".tabbtn").forEach(b=>b.classList.toggle("active",b.dataset.view===name));
-  if(name==="map"&&landingMap) setTimeout(()=>{ landingMap.invalidateSize(); if(currentTripIdx>=0) selectTrip(currentTripIdx); },60);
+  // The map is built on first use, not at boot: creating it immediately starts
+  // downloading tiles from the CDN for a tab the user may never open.
+  if(name==="map"){
+    const fresh=!landingMap;
+    initLandingMap();
+    if(landingMap) setTimeout(()=>{
+      landingMap.invalidateSize();
+      if(fresh) renderEventMarkers();
+      if(currentTripIdx>=0) selectTrip(currentTripIdx);
+      else if(tripsSorted.length) selectTrip(0);
+    },60);
+  }
   if(name==="analytics") loadAnalytics();
 }
 function fmtBytes(b){
@@ -582,7 +598,11 @@ async function boot(){
   $("#toolsx").onclick=()=>$("#tools").style.display="none";
   $("#copybm").onclick=async()=>{try{await navigator.clipboard.writeText(BM);$("#copybm").textContent="copied ✓";setTimeout(()=>$("#copybm").textContent="Copy snippet",1500);}catch(e){alert("Copy failed.");}};
   $("#keyfile").onchange=onKeyFile;
-  try{const {url}=await fetch("api/login/url").then(r=>r.json());$("#loginlink").href=url;$("#loginurl").value=url;}catch(e){}
+  // Not awaited: this only fills the login link inside the Keys panel, so it
+  // must not delay the status line and the clip list.
+  fetch("api/login/url").then(r=>r.json()).then(({url})=>{
+    $("#loginlink").href=url; $("#loginurl").value=url;
+  }).catch(()=>{});
   $("#cbgo").onclick=async()=>{
     const r=await fetch("api/login/exchange",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({callback:$("#cb").value.trim()})}).then(r=>r.json());
     $("#lmsg").textContent=r.ok?("Login OK"+(r.refresh?" – Refresh token received.":".")):("Error: "+r.error); refreshStatus();
@@ -657,12 +677,11 @@ async function boot(){
     }
   },8000);
 
-  // Map must init even if trips/markers fail (e.g. tile CDN blocked in ingress)
-  try { initLandingMap(); } catch(e){ console.error("Landing map init failed:", e); }
+  // No initLandingMap() here — switchView("map") builds it on first use, so
+  // boot does not pull map tiles for a tab that may never be opened.
   try { await refreshStatus(); } catch(e){ console.error("status failed:", e); }
   clearTimeout(slowHint);
   await loadClips(false);
-  renderEventMarkers();
   try { await loadTrips(); } catch(e){ console.error("trips failed:", e); }
   // Poll faster while an index scan is running, so the bar actually moves.
   let pollMs=5000;
