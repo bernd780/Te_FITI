@@ -17,9 +17,9 @@
      no-store, so changing it here is what forces browsers onto the new assets;
      0.7.2 shipped them with a long max-age and would otherwise keep serving
      the previous app.js from cache for a day after an update. -->
-<link rel="stylesheet" href="static/leaflet.css?v=0.7.9"/>
-<script src="static/leaflet.js?v=0.7.9" defer></script>
-<link rel="stylesheet" href="static/style.css?v=0.7.9">
+<link rel="stylesheet" href="static/leaflet.css?v=0.7.10"/>
+<script src="static/leaflet.js?v=0.7.10" defer></script>
+<link rel="stylesheet" href="static/style.css?v=0.7.10">
 </head>
 <body>
 <header>
@@ -149,6 +149,8 @@
          folder on your NAS, so it plays without any further work. <span id="decDeleteNote"></span></p>
       <div class="row"><button class="btn" id="decryptbtn">🔓 Decrypt everything</button><button class="btn ghost" id="deccancel" style="display:none">✕ Cancel</button><span id="decmsg" style="color:var(--muted);font-size:12px"></span></div>
       <div class="jobbar" id="decbar"></div>
+      <p id="cleanupInfo" style="margin-top:12px"></p>
+      <div class="row"><button class="btn ghost" id="cleanupbtn" style="display:none">🗑️ Delete originals of already-decrypted clips</button><span id="cleanupmsg" style="color:var(--muted);font-size:12px"></span></div>
     </div>
     <div class="step">
       <h3>C · Batch thumbnail generation</h3>
@@ -177,6 +179,6 @@
   </div>
 </div>
 
-<script src="static/app.js?v=0.7.9" defer></script>
+<script src="static/app.js?v=0.7.10" defer></script>
 </body>
 </html>

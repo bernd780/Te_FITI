@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.10
+- New **"Delete originals of already-decrypted clips"** button. `delete_originals` only ever applied at the moment a clip was decrypted, so every clip decrypted before 0.7.8 (when the option did nothing at all) still had its encrypted original on the NAS — on this library 157 GB of them. The button reports how many files and roughly how much space before asking, shows a progress bar, and can be cancelled. It only appears when `delete_originals` is on
+- Safety: an original is deleted only when its decrypted copy is present and non-empty, checked immediately before each removal. Candidates come from the index, so building the list costs no NAS access
+- **The map now frames your events instead of the whole planet.** It opened at `setView([0,0], 2)` — a world view that also made the rectangle selection almost unusable. It now fits the bounds of the event markers on first open, and "↻ Reset" returns to that overview
+- One marker per event instead of one per one-minute segment: an event folder holds up to eleven clips at nearly the same spot, which stacked eleven markers. The triggering segment represents the event
+- Selecting the newest trip on first open no longer moves the map — the trip card still fills in, but the view stays on the event overview until you navigate trips yourself
+
 ## 0.7.9
 - **The segment in which an event actually happened is now marked.** Tesla stores one `event.json` per folder but the footage as one-minute segments, so all four (or eleven) rows of an event carried the same 📅 with nothing to say where the door handle was pulled. The triggering segment gets a 🎯 badge, a highlighted row and a tooltip with the offset ("The event happens in this clip at 0:13"); the surrounding segments keep 📅 with "the trigger is in another segment"
 - The trigger is matched to the last segment starting at or before the event, so it stays correct whether segments are 60 or 61 seconds apart and regardless of how short the final one is

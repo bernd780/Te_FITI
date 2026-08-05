@@ -986,6 +986,89 @@ def prepare_clip(cid):
     invalidate(cid)
     return {"ok": not errs, "errors": errs, "clip": _scan_one(cid, keys)}
 
+def cleanup_candidates():
+    """Encrypted originals whose clip is already decrypted — the leftovers from
+    every decrypt that ran while delete_originals was broken (it never deleted
+    anything before 0.7.8), plus anything decrypted with the option off.
+
+    'ready' means the decrypted copy exists; presence in _enc_cache means the
+    encrypted source was still there at the last scan (orphans get pruned), so
+    the candidate list costs no NAS access at all.
+    """
+    out = []
+    for c in clips_cached():
+        for cam, info in c["cameras"].items():
+            if info["state"] != "ready":
+                continue
+            sr = _sr_of_cam(c["folder"], c["timestamp"], cam)
+            if sr in _enc_cache:
+                out.append(sr)
+    return out
+
+
+def cleanup_preview():
+    """Count and rough size of what a cleanup would delete. The size comes from
+    the analytics size cache (decrypted bytes; an eCryptfs original is the same
+    plus an 8 KB header), so it is an estimate, not a measurement."""
+    srs = cleanup_candidates()
+    known = [_size_cache[sr] for sr in srs if sr in _size_cache]
+    est = sum(known)
+    if known and len(known) < len(srs):
+        est = int(est / len(known) * len(srs))     # extrapolate from what we know
+    return {"files": len(srs), "bytes_estimate": est, "exact": len(known) == len(srs)}
+
+
+def cleanup_originals():
+    """Delete the encrypted originals of already-decrypted clips."""
+    global _dec_job
+    if _dec_job.get("running"):
+        return {"skipped": "busy"}
+    srs = cleanup_candidates()
+    _dec_cancel.clear()
+    _dec_job = {"running": True, "done": 0, "total": len(srs), "errors": 0,
+                "deleting": True, "cancelled": False, "skipped": 0,
+                "phase": "cleanup", "freed": 0}
+    freed = 0
+    try:
+        for sr in srs:
+            if _dec_cancel.is_set():
+                with _dec_guard:
+                    _dec_job["skipped"] += 1
+                    _dec_job["done"] += 1
+                continue
+            src, dst = src_abspath(sr), cache_abspath(sr)
+            try:
+                # Never delete unless the decrypted copy is verifiably there
+                if not os.path.isfile(dst) or os.path.getsize(dst) <= 0:
+                    with _dec_guard:
+                        _dec_job["errors"] += 1
+                        _dec_job["done"] += 1
+                    print(f"[cleanup] skipped {sr}: no usable decrypted copy", flush=True)
+                    continue
+                size = os.path.getsize(src)
+                os.remove(src)
+                _enc_cache.pop(sr, None)
+                freed += size
+            except OSError as e:
+                print(f"[cleanup] {sr}: {e}", flush=True)
+                with _dec_guard:
+                    _dec_job["errors"] += 1
+            with _dec_guard:
+                _dec_job["done"] += 1
+                _dec_job["freed"] = freed
+        print(f"[cleanup] removed {_dec_job['done']-_dec_job['errors']-_dec_job['skipped']}"
+              f"/{_dec_job['total']} originals, {freed} bytes freed, "
+              f"{_dec_job['errors']} errors, cancelled={_dec_cancel.is_set()}", flush=True)
+    finally:
+        _cache_save("enc")
+        _dec_job["cancelled"] = _dec_cancel.is_set()
+        _dec_job["running"] = False
+        _dec_cancel.clear()
+        invalidate()
+    return {"removed": _dec_job["done"] - _dec_job["errors"] - _dec_job["skipped"],
+            "freed": freed, "errors": _dec_job["errors"]}
+
+
 def ensure_all():
     """Decrypt every clip that has a key. Deletes the encrypted originals
     afterwards when delete_originals is on — see _decrypt_cam for the guards."""
@@ -1002,7 +1085,8 @@ def ensure_all():
             for cam, info in c["cameras"].items() if info["state"] == "key"]
     _dec_cancel.clear()
     _dec_job = {"running": True, "done": 0, "total": len(jobs), "errors": 0,
-                "deleting": DELETE, "cancelled": False, "skipped": 0}
+                "deleting": DELETE, "cancelled": False, "skipped": 0,
+                "phase": "decrypt", "freed": 0}
     def do(sr):
         if _dec_cancel.is_set():
             # Cancelled: drain the remaining work items without touching the NAS
@@ -1369,6 +1453,8 @@ class H(BaseHTTPRequestHandler):
             if data is None:
                 return self._send(404, {"error": "no event"})
             return self._send(200, data)
+        if path == "/api/cleanup/preview":
+            return self._send(200, cleanup_preview())
         if path == "/api/trips":
             return self._send(200, trips_cached())
         if path == "/api/analytics":
@@ -1452,6 +1538,12 @@ class H(BaseHTTPRequestHandler):
         if path == "/api/decrypt/cancel":
             _dec_cancel.set()
             return self._send(200, {"ok": True, "cancelling": _dec_job.get("running", False)})
+        if path == "/api/cleanup":
+            if not DELETE:
+                return self._send(400, {"ok": False,
+                                        "error": "delete_originals is off in the add-on options"})
+            bg(cleanup_originals)
+            return self._send(200, {"ok": True})
         if path == "/api/thumbs_all":
             bg(gen_all_thumbs)
             return self._send(200, {"ok": True})

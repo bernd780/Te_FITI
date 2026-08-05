@@ -434,7 +434,9 @@ function wireRectSelect(map){
     buildSidebar();
     showAreaResult();
   });
-  $("#filterResetBtn").onclick=()=>{ exitDraw(); clearAreaFilter(); };
+  // Reset also frames all events again, so there is always a way back to the
+  // overview after zooming into a trip or a selection.
+  $("#filterResetBtn").onclick=()=>{ exitDraw(); clearAreaFilter(); fitEventBounds(); };
 }
 
 function showAreaResult(){
@@ -494,11 +496,24 @@ function toggleTheme(){
   applyThemeIcon();
 }
 
+// One marker per event, not per one-minute segment: an event folder holds up to
+// eleven clips at practically the same spot, which used to stack eleven markers
+// on top of each other. The triggering segment represents the event where it is
+// known, otherwise the first segment of that folder.
+function eventMarkerClips(){
+  const byFolder=new Map();
+  for(const c of allClips){
+    if(!c.has_event||!c.gps_bounds) continue;
+    const prev=byFolder.get(c.folder);
+    if(!prev||(c.is_trigger&&!prev.is_trigger)) byFolder.set(c.folder,c);
+  }
+  return [...byFolder.values()];
+}
+
 function renderEventMarkers(){
   if(!landingMap||!markerLayerGroup) return;
   markerLayerGroup.clearLayers();
-  const withGps=allClips.filter(c=>c.gps_bounds);
-  const groups=groupMarkersByCoord(withGps);
+  const groups=groupMarkersByCoord(eventMarkerClips());
   for(const key in groups){
     const list=groups[key];
     const [lat,lon]=key.split(",").map(Number);
@@ -506,6 +521,17 @@ function renderEventMarkers(){
     const m=L.marker([lat,lon],{icon:reasonIcon(withReason&&withReason.reason,list.length)}).addTo(markerLayerGroup);
     m.on("click",()=>{ list.length===1 ? openPlayerOverlay(list[0]) : showDisambiguation(m,list); });
   }
+}
+
+// The map opened on [0,0] at zoom 2 — a view of the whole planet, which also
+// made the rectangle selection useless. Frame the events instead.
+function fitEventBounds(){
+  if(!landingMap) return false;
+  const pts=eventMarkerClips().map(c=>[c.gps_bounds.center_lat,c.gps_bounds.center_lon]);
+  if(!pts.length) return false;
+  if(pts.length===1){ landingMap.setView(pts[0],15); return true; }
+  landingMap.fitBounds(L.latLngBounds(pts),{padding:[40,40],maxZoom:16});
+  return true;
 }
 
 function showDisambiguation(marker,list){
@@ -534,7 +560,10 @@ function renderTripPolylines(){
   });
 }
 
-function selectTrip(idx){
+// fit=false selects a trip without moving the map — used for the automatic
+// selection on first open, where the view should stay framed on all events
+// rather than jumping to the newest drive.
+function selectTrip(idx,fit=true){
   if(idx<0||idx>=tripsSorted.length) return;
   currentTripIdx=idx;
   const t=tripsSorted[idx];
@@ -545,7 +574,7 @@ function selectTrip(idx){
   $("#tcEvents").textContent=t.event_total?("📅 "+t.event_total+" events"):"";
   $("#tripCard").style.display="block";
   renderTripPolylines();
-  if(t.bounds && landingMap){
+  if(fit && t.bounds && landingMap){
     landingMap.fitBounds([[t.bounds.min_lat,t.bounds.min_lon],[t.bounds.max_lat,t.bounds.max_lon]],{padding:[40,40]});
   }
 }
@@ -589,9 +618,14 @@ function switchView(name){
     initLandingMap();
     if(landingMap) setTimeout(()=>{
       landingMap.invalidateSize();
-      if(fresh) renderEventMarkers();
-      if(currentTripIdx>=0) selectTrip(currentTripIdx);
-      else if(tripsSorted.length) selectTrip(0);
+      if(fresh){
+        renderEventMarkers();
+        // Frame the events on first open. A selected trip zooms in further
+        // below; without this the map would still be showing the whole world.
+        fitEventBounds();
+      }
+      if(currentTripIdx>=0) selectTrip(currentTripIdx,!fresh);
+      else if(tripsSorted.length) selectTrip(0,false);
     },60);
   }
   if(name==="analytics") loadAnalytics();
@@ -729,6 +763,52 @@ async function boot(){
           $("#decryptbtn").disabled=false;
           $("#deccancel").style.display="none";
           refreshStatus(); loadClips(true);
+        }
+      }
+    },1000);
+  };
+  // Separate from "Decrypt everything": these clips are already decrypted, only
+  // their encrypted originals are still taking up space.
+  async function refreshCleanup(){
+    const info=$("#cleanupInfo"), btn=$("#cleanupbtn");
+    if(!info||!btn) return;
+    const s=await fetch("api/status").then(r=>r.json()).catch(()=>null);
+    if(!s||!s.delete_originals){ info.textContent=""; btn.style.display="none"; return; }
+    const p=await fetch("api/cleanup/preview").then(r=>r.json()).catch(()=>null);
+    if(!p||!p.files){ info.textContent="No leftover encrypted originals — nothing to clean up."; btn.style.display="none"; return; }
+    const size=p.bytes_estimate?` (${p.exact?"":"about "}${fmtBytes(p.bytes_estimate)})`:"";
+    info.innerHTML=`<b>${p.files}</b> encrypted original(s)${size} belong to clips that are already decrypted. `
+      +`Removing them frees that space; the decrypted copy stays and remains playable.`;
+    btn.style.display="inline-block";
+  }
+  $("#toolsbtn").addEventListener("click",()=>refreshCleanup().catch(()=>{}));
+  $("#cleanupbtn").onclick=async()=>{
+    const p=await fetch("api/cleanup/preview").then(r=>r.json()).catch(()=>null);
+    if(!p||!p.files){ $("#cleanupmsg").textContent="Nothing to clean up."; return; }
+    const size=p.bytes_estimate?` ${p.exact?"":"about "}${fmtBytes(p.bytes_estimate)},`:"";
+    if(!confirm(`DELETE ${p.files} encrypted original file(s),${size} from the NAS.\n\n`
+      +`These clips are already decrypted — the decrypted copy stays and remains playable, `
+      +`but the encrypted source cannot be recovered.\n\nContinue?`)) return;
+    $("#cleanupbtn").disabled=true; $("#cleanupmsg").textContent="Starting…";
+    $("#deccancel").style.display="inline-block"; $("#deccancel").disabled=false;
+    await fetch("api/cleanup",{method:"POST"});
+    const poll=setInterval(async()=>{
+      const st=await fetch("api/status").then(r=>r.json()).catch(()=>null);
+      if(st&&st.dec_job){
+        const j=st.dec_job;
+        $("#decbar").classList.toggle("on",!!j.running);
+        if(j.running){
+          $("#cleanupmsg").textContent=`${j.done}/${j.total}…`;
+          renderBar($("#decbar"),{label:"🗑️ Removing encrypted originals…",done:j.done,total:j.total,
+                                 note:(j.freed?fmtBytes(j.freed)+" freed":"")+(j.errors?` · ${j.errors} skipped`:"")});
+        } else {
+          clearInterval(poll);
+          $("#decbar").innerHTML="";
+          const ok=j.done-j.errors-(j.skipped||0);
+          $("#cleanupmsg").textContent=(j.cancelled?"Cancelled — ":"")
+            +`${ok} removed, ${fmtBytes(j.freed||0)} freed`+(j.errors?` · ${j.errors} skipped`:"");
+          $("#cleanupbtn").disabled=false; $("#deccancel").style.display="none";
+          refreshStatus(); loadClips(true); refreshCleanup().catch(()=>{});
         }
       }
     },1000);
