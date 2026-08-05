@@ -159,3 +159,12 @@ input[type=text]{flex:1;min-width:240px;background:#0e1318;border:1px solid var(
 /* Batch-job bars inside the tools panel */
 .jobbar{margin-top:8px;display:none}
 .jobbar.on{display:block}
+
+/* ---------- Reason filter ---------- */
+#filterReason{background:var(--panel2);color:var(--txt);border:1px solid var(--line);
+  border-radius:7px;padding:3px 7px;font-size:12px;max-width:230px}
+/* Clickable rows in the events-by-reason chart filter the clip list. */
+.barRow.clickable{cursor:pointer;border-radius:6px;padding:2px 4px;margin:0 -4px;
+  transition:background .12s ease}
+.barRow.clickable:hover{background:var(--panel2)}
+.barRow.clickable:hover .barLbl{color:var(--accent)}

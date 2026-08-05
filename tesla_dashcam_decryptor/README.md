@@ -30,7 +30,11 @@ pure local viewer without any Tesla account interaction at all.
   trip card with prev/next navigation; "View clips" filters the list to that
   drive
 - **Analytics tab** — storage usage per folder/vehicle, trip/clip
-  statistics, and events-by-reason / clips-by-month charts
+  statistics, and events-by-reason / clips-by-month charts. Clicking a row in
+  the events chart filters the clip list to that reason
+- **Filter by event reason** — a dropdown listing the reasons present in your
+  library with their counts (object detection, honk, accelerometer, emergency
+  braking, …), shown as a removable chip and combining with all other filters
 - **Light/dark theme toggle**, persisted, respects your OS preference on
   first load
 - **6-camera grid player** — front, rear, left, right, pillar L/R with

@@ -17,9 +17,9 @@
      no-store, so changing it here is what forces browsers onto the new assets;
      0.7.2 shipped them with a long max-age and would otherwise keep serving
      the previous app.js from cache for a day after an update. -->
-<link rel="stylesheet" href="static/leaflet.css?v=0.7.6"/>
-<script src="static/leaflet.js?v=0.7.6" defer></script>
-<link rel="stylesheet" href="static/style.css?v=0.7.6">
+<link rel="stylesheet" href="static/leaflet.css?v=0.7.7"/>
+<script src="static/leaflet.js?v=0.7.7" defer></script>
+<link rel="stylesheet" href="static/style.css?v=0.7.7">
 </head>
 <body>
 <header>
@@ -42,8 +42,12 @@
         <label><input type="checkbox" id="filterDrive"> 📊 Driving</label>
         <label><input type="checkbox" id="filterEvent"> 📅 Event</label>
         <label><input type="checkbox" id="filterHonk"> 📯 Honk</label>
+        <select id="filterReason" title="Show only clips with this event reason">
+          <option value="">All reasons</option>
+        </select>
         <span id="areaChip" class="chip" style="display:none"></span>
         <span id="tripChip" class="chip" style="display:none"></span>
+        <span id="reasonChip" class="chip" style="display:none"></span>
         <span id="resultCount" class="rescount"></span>
       </div>
     </div>
@@ -166,6 +170,6 @@
   </div>
 </div>
 
-<script src="static/app.js?v=0.7.6" defer></script>
+<script src="static/app.js?v=0.7.7" defer></script>
 </body>
 </html>

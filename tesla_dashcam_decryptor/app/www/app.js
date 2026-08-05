@@ -86,6 +86,7 @@ async function refreshStatus(){
 async function loadClips(keepActive){
   if(!keepActive) $("#cliplist").innerHTML='<div class="loading">⏳ Loading clips…</div>';
   allClips=await fetch("api/clips").then(r=>r.json()).catch(()=>[]);
+  populateReasonFilter();
   buildSidebar();
   // No-op until the map exists; keeps the markers in step when the list is
   // reloaded (scan finished, keys fetched) while the Map tab is open.
@@ -115,6 +116,7 @@ function buildSidebar(){
     if(fDrive && !c.has_tel) continue;
     if(fEvent && !c.has_event) continue;
     if(fHonk && c.reason!=="user_interaction_honk") continue;
+    if(reasonFilter && c.reason!==reasonFilter) continue;
     if(q && !(c.timestamp.toLowerCase().includes(q) || (c.folder||"").toLowerCase().includes(q))) continue;
     if(gpsFilter){
       const hasPtInBounds = c.gps_bounds && gpsFilter.contains([c.gps_bounds.center_lat, c.gps_bounds.center_lon]);
@@ -145,8 +147,31 @@ function buildSidebar(){
 }
 function markActive(id){ [...document.querySelectorAll(".cliprow")].forEach(r=>r.classList.toggle("active",r.dataset.id===id)); }
 
-// ---------- Filter chips (area / trip) + result count ----------
-let tripFilter=null; // Set of clip ids, or null
+// ---------- Filter chips (area / trip / reason) + result count ----------
+let tripFilter=null;    // Set of clip ids, or null
+let reasonFilter=null;  // event reason string, or null
+
+// Options come from the clips actually present, newest counts included, so the
+// dropdown never offers a reason that would yield an empty list.
+function populateReasonFilter(){
+  const sel=$("#filterReason"); if(!sel) return;
+  const counts={};
+  for(const c of allClips) if(c.reason) counts[c.reason]=(counts[c.reason]||0)+1;
+  const entries=Object.entries(counts).sort((a,b)=>b[1]-a[1]);
+  sel.innerHTML='<option value="">All reasons</option>'+entries.map(([r,n])=>
+    `<option value="${r}">${REASON_LABELS[r]||r} (${n})</option>`).join("");
+  // keep the current selection if it still exists
+  sel.value=(reasonFilter&&counts[reasonFilter])?reasonFilter:"";
+  if(reasonFilter&&!counts[reasonFilter]) reasonFilter=null;
+}
+
+function setReasonFilter(reason){
+  reasonFilter=reason||null;
+  const sel=$("#filterReason"); if(sel) sel.value=reasonFilter||"";
+  buildSidebar();
+}
+function clearReasonFilter(){ setReasonFilter(null); }
+
 function updateFilterChips(count){
   const ac=$("#areaChip");
   if(gpsFilter){ ac.style.display="inline-flex"; ac.innerHTML='📍 Area <span class="chipx" title="Clear area filter">✕</span>'; ac.querySelector(".chipx").onclick=clearAreaFilter; }
@@ -154,6 +179,13 @@ function updateFilterChips(count){
   const tc=$("#tripChip");
   if(tripFilter){ tc.style.display="inline-flex"; tc.innerHTML='🚗 Trip <span class="chipx" title="Clear trip filter">✕</span>'; tc.querySelector(".chipx").onclick=clearTripFilter; }
   else tc.style.display="none";
+  const rc=$("#reasonChip");
+  if(reasonFilter){
+    rc.style.display="inline-flex";
+    rc.innerHTML=`📅 ${REASON_LABELS[reasonFilter]||reasonFilter} <span class="chipx" title="Clear reason filter">✕</span>`;
+    rc.querySelector(".chipx").onclick=clearReasonFilter;
+  }
+  else rc.style.display="none";
   $("#resultCount").textContent=count+" clip"+(count===1?"":"s");
 }
 function clearAreaFilter(){
@@ -585,8 +617,9 @@ async function loadAnalytics(){
 
   const reasons=Object.entries(a.events_by_reason).sort((x,y)=>y[1]-x[1]);
   const maxEv=Math.max(1,...reasons.map(r=>r[1]));
-  const eventsHtml=reasons.length?`<h3>Events by reason</h3><div class="barList">${
-    reasons.map(([r,n])=>`<div class="barRow"><span class="barLbl">${REASON_LABELS[r]||r}</span><!-- grouped server-side; the magnitude is split off the reason --><div class="barTrack"><div class="barFill" style="width:${(n/maxEv*100).toFixed(1)}%;background:var(--warn)"></div></div><span class="barVal">${n}</span></div>`).join("")
+  // Rows are clickable: they filter the clip list to that reason and jump to it.
+  const eventsHtml=reasons.length?`<h3>Events by reason</h3><div class="hint">Click a row to see only those clips.</div><div class="barList">${
+    reasons.map(([r,n])=>`<div class="barRow clickable" data-reason="${r}" title="Show only these clips"><span class="barLbl">${REASON_LABELS[r]||r}</span><div class="barTrack"><div class="barFill" style="width:${(n/maxEv*100).toFixed(1)}%;background:var(--warn)"></div></div><span class="barVal">${n}</span></div>`).join("")
   }</div>`:"";
 
   const months=a.clips_by_month;
@@ -604,6 +637,17 @@ async function loadAnalytics(){
   const monthHtml=months.length?`<h3>Clips by month</h3><svg viewBox="0 0 ${w} ${h}" style="width:100%;max-width:${w}px;height:${h}px">${bars}</svg>`:"";
 
   el.innerHTML=tilesHtml+storageHtml+eventsHtml+monthHtml;
+  el.querySelectorAll(".barRow[data-reason]").forEach(row=>{
+    row.onclick=()=>{ viewReasonClips(row.dataset.reason); };
+  });
+}
+
+// Filter the clip list to one event reason and show it — the same move as the
+// trip card's "View clips".
+function viewReasonClips(reason){
+  tripFilter=null;
+  setReasonFilter(reason);
+  switchView("clips");
 }
 
 // ---------- Tools (fetch keys) ----------
@@ -678,6 +722,7 @@ async function boot(){
   $("#dlzip").onclick=()=>{ if(!activeId){return;} $("#vmsg").textContent="Creating ZIP…"; const a=document.createElement("a"); a.href="api/zip?id="+encodeURIComponent(activeId); a.click(); setTimeout(()=>$("#vmsg").textContent="",5000); };
   $("#permdec").onclick=async()=>{ if(!activeId){return;} $("#vmsg").textContent="Decrypting & saving…"; const r=await fetch("api/prepare",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:activeId})}).then(r=>r.json()).catch(()=>({ok:false})); $("#vmsg").textContent=(r&&(r.ok||r.clip))?"✓ permanently saved (folder decrypted/)":"Error"; refreshStatus(); loadClips(true); };
   $("#search").oninput=buildSidebar;
+  $("#filterReason").onchange=e=>setReasonFilter(e.target.value);
   $("#filterDrive").onchange=buildSidebar;
   $("#filterEvent").onchange=buildSidebar;
   $("#filterHonk").onchange=buildSidebar;

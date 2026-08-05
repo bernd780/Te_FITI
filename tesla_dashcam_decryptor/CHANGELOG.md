@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.7
+- New **filter by event reason**. Two ways in: a dropdown in the Clips filter bar listing the reasons actually present with their counts, or clicking a row in the Analytics *Events by reason* chart — which filters the list and jumps straight to it, like the trip card's "View clips"
+- The active reason shows as a removable chip next to the area and trip chips, and combines with search, the Driving/Event/Honk checkboxes, the map area filter and the trip filter, all reflected in the live result count
+- Clicking a reason in Analytics clears an active trip filter first: intersecting the two would usually produce an empty list for no visible reason
+
 ## 0.7.6
 - Fix: the Analytics trip statistics read `0 trips` even when the Map showed plenty. `compute_analytics()` used the non-blocking `trips_cached()`, which answers empty while its own build is running, and that empty answer was then frozen into the analytics cache for a full TTL. Analytics already runs on a background thread, so it now computes the trips itself when the cache is not current
 - Fix: Tesla appends the measured magnitude to some trigger reasons (`sentry_aware_accel_0.469145`). Because the number was part of the string, every measurement counted as its own category — a real library showed **14 near-identical rows** of 2–4 events each in the events-by-reason chart instead of one bucket. The magnitude is now split off and reported separately as `reason_value`
