@@ -288,9 +288,16 @@ def _classify_new(mp4s):
     return files
 
 # ---------- Clip state ----------
-def _cam_state(sr, keys, out_files=None):
+def _cam_state(sr, keys, out_files=None, src_files=None):
     """out_files: pre-walked set of paths under OUT_DIR. When given, the
-    'is it already decrypted?' test is a set lookup instead of an SMB stat."""
+    'is it already decrypted?' test is a set lookup instead of an SMB stat.
+
+    src_files: pre-walked set under SCAN_DIR. A file missing from it but present
+    in out_files has had its encrypted original deleted (delete_originals) — the
+    decrypted copy is the only one left and is served straight from the cache.
+    """
+    if src_files is not None and sr not in src_files:
+        return {"state": "ready", "url": "media/" + sr}
     if not _is_encrypted(src_abspath(sr), sr):
         return {"state": "plain", "url": "media/" + sr}
     cached = sr in out_files if out_files is not None else os.path.exists(cache_abspath(sr))
@@ -329,6 +336,8 @@ def _compute_meta(c, out_files=None, src_files=None):
             ht = False
     ejsr = (c["folder"] + "/" if c["folder"] else "") + "event.json"
     ejp = os.path.join(SCAN_DIR, c["folder"], "event.json")
+    # Only the .mp4 files are ever removed by delete_originals, so event.json
+    # stays in the source folder and this lookup keeps working.
     he = ejsr in src_files if src_files is not None else os.path.isfile(ejp)
     reason = None
     if he:
@@ -452,11 +461,22 @@ def _scan_locked(keys=None):
                      else _listdir_tree(OUT_DIR))
         t_walk = time.time()
 
+        # The clip list is the union of both trees. With delete_originals on, a
+        # clip's encrypted source is removed once it is decrypted — building the
+        # list from SCAN_DIR alone would make those clips vanish from the viewer
+        # even though the playable copy still sits in OUT_DIR.
+        candidates = set(src_files)
+        orphans = set()
+        if out_files is not src_files:
+            orphans = {sr for sr in out_files
+                       if sr.lower().endswith(".mp4") and sr not in src_files}
+            candidates |= orphans
         mp4s = [(sr, m) for sr, m in
-                ((sr, TS_RE.search(posixpath.basename(sr))) for sr in src_files) if m]
-        # Classify unseen files up front and in parallel; afterwards the loop
-        # below is pure dict lookups and touches the NAS no further.
-        enc_misses = _classify_new(mp4s)
+                ((sr, TS_RE.search(posixpath.basename(sr))) for sr in candidates) if m]
+        # Classify unseen files up front; afterwards the loop below is pure dict
+        # lookups and touches the NAS no further. Orphans need no header read —
+        # their source is gone, so there is nothing left to classify.
+        enc_misses = _classify_new([(sr, m) for sr, m in mp4s if sr not in orphans])
         t_enc = time.time()
 
         clips = {}
@@ -469,7 +489,7 @@ def _scan_locked(keys=None):
             c = clips.setdefault(ck, {"id": ck, "folder": folder, "timestamp": ts,
                                       "source": top, "vehicle": vehicle,
                                       "cameras": {}, "telemetry": None})
-            c["cameras"][cam] = _cam_state(sr, keys, out_files)
+            c["cameras"][cam] = _cam_state(sr, keys, out_files, src_files)
             if cam == "front":
                 telsr = _telsr(folder, ts)
                 if telsr in out_files:
