@@ -1285,6 +1285,9 @@ def pending_key_items():
         _cache_save("nokey")
         print(f"[fetch] {len(res['no_wrapped_key'])} file(s) carry no wrapped key "
               f"(Tesla stored none) — these can never be decrypted", flush=True)
+        # Their clip state changes from "locked" to "nokey", so the list has to
+        # be rebuilt for the counters and badges to reflect it.
+        invalidate()
     _dbg(f"pending_key_items: {len(files)} candidates -> {len(res['items'])} items, "
          f"{len(res['no_wrapped_key'])} without a wrapped key, "
          f"{len(res['unreadable'])} unreadable")
@@ -1314,7 +1317,7 @@ def api_fetch(items):
     return _last_api
 
 def run_cycle(do_fetch=True, do_decrypt=None):
-    global _busy
+    global _busy, _last_api
     if do_decrypt is None:
         do_decrypt = AUTO_DECRYPT
     if not _lock.acquire(blocking=False):
@@ -1326,6 +1329,12 @@ def run_cycle(do_fetch=True, do_decrypt=None):
             if items:
                 r = api_fetch(items)
                 print(f"[fetch] {len(items)} offen, +{r.get('got',0)} Keys ({r.get('msg')})", flush=True)
+            else:
+                # Nothing to ask for. Without this _last_api kept its initial
+                # {"ok": None} and the panel stayed on "Fetching keys…" — the
+                # very case this run is most likely to hit.
+                _last_api = {"ok": True, "got": 0,
+                             "msg": "nothing left to request a key for"}
         if do_decrypt:
             r = ensure_all()
             if r["decrypted"]:

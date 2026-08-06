@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.13
+- Follow-up to 0.7.12, both found by watching the fix run on a real library: a fetch that has nothing to request now records that outcome, instead of leaving the panel on "Fetching keys…" — exactly the case a library full of key-less files hits every time
+- Marking files as key-less now refreshes the clip list, so the red badges and the `no_wrapped_key` counter appear immediately rather than after the next scan
+
 ## 0.7.12
 - **"Fetching keys…" could sit there forever.** The message was only replaced when at least one key came back, so a fetch that returned none left the panel looking stuck although it had finished. Every outcome is now reported, including "0 new keys", together with how many are still missing
 - **Diagnosed why keys never arrive for some files: they contain no key to ask about.** A clip can be eCryptfs-encrypted and still have its wrapped-key section all zeros — and that section *is* the request sent to Tesla. Those files were silently dropped while building the request, so each fetch honestly reported success and the count never moved. On this library that is 273 files, confirmed by sampling headers across eight different dates
