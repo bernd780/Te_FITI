@@ -85,6 +85,16 @@ def telemetry_for_plain(src_path, tel_path):
     _write_tel(data, tel_path, os.path.basename(src_path))
 
 
+def retag_telemetry(mp4_path, tel_path):
+    """Re-extract telemetry from an mp4 already on disk (decrypted or plain),
+    overwriting the cached JSON in place. Unlike telemetry_for_plain, this
+    deliberately does NOT skip when tel_path already exists — it exists to fix
+    telemetry.json files written by an older, buggy extract_telemetry(). The
+    mp4 itself is read-only input and is never modified."""
+    data = open(mp4_path, "rb").read()
+    _write_tel(data, tel_path, os.path.basename(mp4_path))
+
+
 def decrypt_pending(src_dir, out_dir, keys, delete_originals=False,
                     embed_key=False, log=print):
     cand = keybridge.files_needing_decrypt(src_dir, out_dir, keys)

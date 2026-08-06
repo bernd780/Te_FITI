@@ -23,6 +23,13 @@ ffmpeg at the event timestamp (event.json) or ~1 s and caches it.
   POST /api/decrypt           decrypt all keyed clips now (batch)
   POST /api/decrypt/cancel    stop that batch after the files already in flight
   POST /api/telemetry_all     extract SEI telemetry for all plain clips missing it (batch)
+  POST /api/telemetry_resync  re-extract telemetry for clips predating the frame-timing fix (batch)
+  GET  /api/telemetry_resync/preview  count of clips telemetry_resync would touch
+  POST /api/telemetry_all/cancel      stop backfill or resync after files already in flight
+  GET  /api/cleanup/preview   count/bytes of already-decrypted originals delete_originals would remove
+  POST /api/cleanup           remove them (batch)
+  GET  /api/quarantine/preview  count/bytes of key-less files quarantine_broken would move
+  POST /api/quarantine        move them to broken_subpath (batch)
   GET  /api/trips             clips grouped into trips (contiguous drives per vehicle)
   GET  /api/analytics         storage/clip/trip/event stats (cached 60s)
   POST /api/keys              FEKs (bookmarklet) -> store
@@ -36,7 +43,7 @@ import os, json, argparse, re, glob, posixpath, threading, time, base64, zipfile
 from urllib.parse import urlparse, parse_qs
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-import keybridge, pipeline, keystore
+import keybridge, pipeline, keystore, telemetry
 from keybridge import is_ecryptfs
 from tesla_auth import TeslaAuth
 import tesla_api
@@ -73,8 +80,12 @@ _lcache = {"t": 0.0, "data": None}
 _lcache_guard = threading.Lock()
 _thumb_job = {"running": False, "done": 0, "total": 0}
 _thumb_guard = threading.Lock()
-_tel_job = {"running": False, "done": 0, "total": 0}
+_tel_job = {"running": False, "done": 0, "total": 0, "mode": "", "skipped": 0}
 _tel_guard = threading.Lock()
+# Shared by the backfill (gen_all_telemetry) and resync (telemetry_resync_all)
+# jobs, since they both write telemetry.json and running two at once would
+# just have them race on the same files.
+_tel_cancel = threading.Event()
 _dec_job = {"running": False, "done": 0, "total": 0, "errors": 0, "deleting": False,
             "cancelled": False, "skipped": 0}
 _dec_guard = threading.Lock()
@@ -114,13 +125,14 @@ _enc_cache = {}      # scanrel  -> bool, file carries an eCryptfs header
 _track_cache = {}    # clip id  -> decimated GPS track for the trip map
 _size_cache = {}     # scanrel  -> file size in bytes (analytics storage stats)
 _nokey_cache = {}    # scanrel  -> True, encrypted but carries no wrapped key
+_telsync_cache = {}  # telsr    -> True once confirmed on the current telemetry.TELEMETRY_SCHEMA
 _CACHE_FILES = {}    # name -> (dict, path)
 
 def _cache_init(data_dir):
     """Bind each cache dict to its JSON file and load what is already there."""
     for name, d in (("meta", _meta_cache), ("enc", _enc_cache),
                     ("track", _track_cache), ("size", _size_cache),
-                    ("nokey", _nokey_cache)):
+                    ("nokey", _nokey_cache), ("telsync", _telsync_cache)):
         path = os.path.join(data_dir, f".{name}_cache.json")
         _CACHE_FILES[name] = (d, path)
         if os.path.isfile(path):
@@ -589,9 +601,17 @@ def _scan_locked(keys=None):
         _scan_job.update({"running": False, "phase": "", "took": time.time() - t0})
 
 
-def _rescan_async():
+def _rescan_async(warm_derived=False):
     """Refresh the clip list in the background, one scan at a time. Requests are
-    never blocked by a scan — they get the previous list until this finishes."""
+    never blocked by a scan — they get the previous list until this finishes.
+
+    warm_derived: after the scan produces a non-empty list, kick off the trips
+    and analytics builds too. Set only for the start-up warm-up, so those
+    caches (and the persistent size/track caches they fill) are ready by the
+    time the user opens the Map or Analytics tab, instead of building on the
+    first click. Not set for routine stale-refreshes: those just expire the
+    derived caches and let the next request rebuild them lazily — with the
+    size/track caches already warm from start-up, that rebuild is cheap."""
     global _rescan_running
     with _rescan_guard:
         if _rescan_running:
@@ -609,6 +629,15 @@ def _rescan_async():
             # this they keep serving whatever they were built from, which on a
             # cold start is an empty list and reads as "0 clips, 0 trips".
             _derived_expire()
+            if warm_derived and data:
+                # Build trips + analytics now, in the background, so the first
+                # visit to those tabs is instant. _derived_cached guards
+                # against double-builds, so this is safe alongside any request
+                # that happens to land during the warm-up.
+                print(f"[warmup] index ready ({len(data)} clips), "
+                      f"pre-building trips and analytics", flush=True)
+                trips_cached()
+                analytics_cached()
         except Exception as e:
             print("[scan]", e, flush=True)
         finally:
@@ -1171,14 +1200,16 @@ def ensure_all():
     # every interval_seconds, and forcing a full NAS re-scan each time is what
     # made the index build crawl. A list up to LIST_TTL old only means a clip
     # gets decrypted one cycle later.
-    jobs = [_sr_of_cam(c["folder"], c["timestamp"], cam)
+    jobs = [(_sr_of_cam(c["folder"], c["timestamp"], cam), c["id"])
             for c in clips_cached()
             for cam, info in c["cameras"].items() if info["state"] == "key"]
     _dec_cancel.clear()
     _dec_job = {"running": True, "done": 0, "total": len(jobs), "errors": 0,
                 "deleting": DELETE, "cancelled": False, "skipped": 0,
                 "phase": "decrypt", "freed": 0}
-    def do(sr):
+    touched = set()
+    def do(item):
+        sr, cid = item
         if _dec_cancel.is_set():
             # Cancelled: drain the remaining work items without touching the NAS
             with _dec_guard:
@@ -1187,6 +1218,7 @@ def ensure_all():
             return
         try:
             _decrypt_cam(sr, keys, delete_original=DELETE)
+            touched.add(cid)
         except Exception as e:
             print(f"[decrypt] {sr}: {e}", flush=True)
             with _dec_guard:
@@ -1201,12 +1233,25 @@ def ensure_all():
                   f"{_dec_job['errors']} errors, {_dec_job['skipped']} skipped, "
                   f"cancelled={_dec_cancel.is_set()}, delete_originals={DELETE}", flush=True)
     finally:
-        _meta_cache.clear()      # decrypting produces telemetry -> metadata and
-        _track_cache.clear()     # GPS tracks must be recomputed
+        # Only the clips actually decrypted this round need their metadata
+        # recomputed — decrypting produces telemetry, which changes has_tel/
+        # gps_bounds/reason for exactly those clips and nothing else. This
+        # used to be an unconditional _meta_cache.clear()/_track_cache.clear()
+        # (and an unconditional invalidate()) every single time, including
+        # when there was nothing to decrypt. Since this runs from the
+        # scheduler every interval_seconds regardless of whether auto_decrypt
+        # actually found work, on a large library that wiped the whole
+        # metadata cache every few minutes — often before a scan slow enough
+        # to need several minutes to rebuild it had even finished, so the
+        # cache could never stay warm.
+        for cid in touched:
+            _meta_cache.pop(cid, None)
+            _track_cache.pop(cid, None)
         _dec_job["cancelled"] = _dec_cancel.is_set()
         _dec_job["running"] = False
         _dec_cancel.clear()
-        invalidate()
+        if touched:
+            invalidate()
     return {"decrypted": _dec_job["done"] - _dec_job["errors"] - _dec_job["skipped"],
             "errors": _dec_job["errors"], "cancelled": _dec_job["cancelled"]}
 
@@ -1312,12 +1357,20 @@ def gen_all_telemetry():
     for c in clips:
         front = c["cameras"].get("front")
         if front and front["state"] == "plain" and not c.get("has_tel"):
-            targets.append(_sr_of_cam(c["folder"], c["timestamp"], "front"))
-    _tel_job = {"running": True, "done": 0, "total": len(targets)}
-    def do(sr):
+            targets.append((_sr_of_cam(c["folder"], c["timestamp"], "front"), c["id"]))
+    _tel_cancel.clear()
+    _tel_job = {"running": True, "done": 0, "total": len(targets), "mode": "backfill", "skipped": 0}
+    touched = set()
+    def do(item):
+        sr, cid = item
+        if _tel_cancel.is_set():
+            with _tel_guard:
+                _tel_job["skipped"] += 1; _tel_job["done"] += 1
+            return
         try:
             telp = os.path.splitext(cache_abspath(sr))[0] + ".telemetry.json"
             pipeline.telemetry_for_plain(src_abspath(sr), telp)
+            touched.add(cid)
         except Exception as e:
             print(f"[telemetry] {sr}: {e}", flush=True)
         with _tel_guard:
@@ -1326,12 +1379,116 @@ def gen_all_telemetry():
         if targets:
             with ThreadPoolExecutor(max_workers=3) as ex:
                 list(ex.map(do, targets))
-            print(f"[telemetry] {_tel_job['done']}/{_tel_job['total']} extracted", flush=True)
+            print(f"[telemetry] {_tel_job['done']-_tel_job['skipped']}/{_tel_job['total']} extracted, "
+                  f"{_tel_job['skipped']} skipped, cancelled={_tel_cancel.is_set()}", flush=True)
     finally:
-        _meta_cache.clear()
-        _track_cache.clear()
+        # Capture before clearing — see telemetry_resync_all() for why.
+        _tel_job["cancelled"] = _tel_cancel.is_set()
+        # Only the clips that actually got a fresh telemetry.json need their
+        # metadata recomputed — see ensure_all() for why a blanket clear here
+        # is expensive on a large library.
+        for cid in touched:
+            _meta_cache.pop(cid, None)
+            _track_cache.pop(cid, None)
+        if touched:
+            invalidate()
+        _tel_job["running"] = False
+        _tel_cancel.clear()
+
+
+def _telemetry_up_to_date(telsr):
+    """Cheap check: is this cached telemetry.json already on the current
+    extraction schema? "schema" is written as the FIRST key by
+    extract_telemetry(), so a 64-byte partial read is enough — no need to
+    parse the whole file, which can be 200+ KB. A positive result is
+    remembered forever (a file's schema cannot regress), so this is paid at
+    most once per file, ever."""
+    if _telsync_cache.get(telsr):
+        return True
+    try:
+        with open(cache_abspath(telsr), "rb") as f:
+            head = f.read(64)
+    except OSError:
+        return True  # can't read it -> not ours to fix, don't offer it
+    marker = b'"schema":%d' % telemetry.TELEMETRY_SCHEMA
+    up_to_date = marker in head
+    if up_to_date:
+        _telsync_cache[telsr] = True
+    return up_to_date
+
+
+def telemetry_resync_candidates():
+    """Clips whose cached telemetry.json predates the frame-timing fix
+    (0.7.15) and can be corrected in place from the already-decrypted/plain
+    mp4 already on disk — no NAS write beyond overwriting that one JSON file,
+    no re-decryption, no contact with Tesla."""
+    out = []
+    for c in clips_cached():
+        front = c["cameras"].get("front")
+        if not (front and c.get("has_tel")):
+            continue
+        telsr = _telsr(c["folder"], c["timestamp"])
+        if not _telemetry_up_to_date(telsr):
+            out.append((c["id"], _sr_of_cam(c["folder"], c["timestamp"], "front"), telsr))
+    return out
+
+
+def telemetry_resync_preview():
+    return {"files": len(telemetry_resync_candidates()),
+            "schema": telemetry.TELEMETRY_SCHEMA}
+
+
+def telemetry_resync_all():
+    """Re-extract telemetry for every clip whose cached JSON predates the
+    frame-timing fix. Reads the mp4 that is already on disk (decrypted or
+    plain) and overwrites only its telemetry.json sidecar — the clip itself,
+    its encrypted original (if any) and the key store are never touched."""
+    global _tel_job
+    if _tel_job.get("running"):
+        return {"skipped": "busy"}
+    cand = telemetry_resync_candidates()
+    _tel_cancel.clear()
+    _tel_job = {"running": True, "done": 0, "total": len(cand), "mode": "resync",
+                "skipped": 0, "errors": 0}
+    def do(item):
+        cid, front_sr, telsr = item
+        if _tel_cancel.is_set():
+            with _tel_guard:
+                _tel_job["skipped"] += 1; _tel_job["done"] += 1
+            return
+        try:
+            full = resolve_media(front_sr)
+            if not full:
+                raise FileNotFoundError(front_sr)
+            pipeline.retag_telemetry(full, cache_abspath(telsr))
+            _telsync_cache[telsr] = True
+        except Exception as e:
+            print(f"[telemetry-resync] {cid}: {e}", flush=True)
+            with _tel_guard:
+                _tel_job["errors"] += 1
+        with _tel_guard:
+            _tel_job["done"] += 1
+        _meta_cache.pop(cid, None)
+        _track_cache.pop(cid, None)
+    try:
+        if cand:
+            with ThreadPoolExecutor(max_workers=3) as ex:
+                list(ex.map(do, cand))
+            print(f"[telemetry-resync] {_tel_job['done']-_tel_job['errors']-_tel_job['skipped']}"
+                  f"/{_tel_job['total']} fixed, {_tel_job['errors']} errors, "
+                  f"{_tel_job['skipped']} skipped, cancelled={_tel_cancel.is_set()}", flush=True)
+    finally:
+        # Capture before clearing: clearing the Event here means
+        # _tel_cancel.is_set() would read False again by the time the return
+        # statement below runs, always reporting "not cancelled" even when it
+        # was — the same mistake fixed in ensure_all()/quarantine_broken().
+        _tel_job["cancelled"] = _tel_cancel.is_set()
+        _cache_save("telsync")
         invalidate()
         _tel_job["running"] = False
+        _tel_cancel.clear()
+    return {"fixed": _tel_job["done"] - _tel_job["errors"] - _tel_job["skipped"],
+            "errors": _tel_job["errors"], "cancelled": _tel_job["cancelled"]}
 
 
 # ---------- Direct API ----------
@@ -1575,6 +1732,8 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, cleanup_preview())
         if path == "/api/quarantine/preview":
             return self._send(200, quarantine_preview())
+        if path == "/api/telemetry_resync/preview":
+            return self._send(200, telemetry_resync_preview())
         if path == "/api/trips":
             return self._send(200, trips_cached())
         if path == "/api/analytics":
@@ -1676,6 +1835,12 @@ class H(BaseHTTPRequestHandler):
         if path == "/api/telemetry_all":
             bg(gen_all_telemetry)
             return self._send(200, {"ok": True})
+        if path == "/api/telemetry_resync":
+            bg(telemetry_resync_all)
+            return self._send(200, {"ok": True})
+        if path == "/api/telemetry_all/cancel":
+            _tel_cancel.set()
+            return self._send(200, {"ok": True, "cancelling": _tel_job.get("running", False)})
         if path == "/api/login/exchange":
             try:
                 tok = auth.exchange_code(json.loads(raw or b"{}").get("callback", ""))
@@ -1732,7 +1897,10 @@ if __name__ == "__main__":
     _cache_init(DATA_DIR)
     # Warm the clip list before the panel is first opened, so the very first
     # request is served from memory instead of waiting for a full NAS scan.
-    _rescan_async()
+    # warm_derived=True also pre-builds trips and analytics right after the
+    # index is ready, so the Map and Analytics tabs are instant on first open
+    # rather than kicking off a minutes-long build on click.
+    _rescan_async(warm_derived=True)
     threading.Thread(target=scheduler, daemon=True).start()
     print(f"Viewer :{a.port} scan={SCAN_DIR} enc={SRC_DIR} (prefix='{ENC_PREFIX}') "
           f"out={OUT_DIR} broken={BROKEN_DIR or '-'} keys={KEYS_FILE} auto_decrypt={AUTO_DECRYPT} "

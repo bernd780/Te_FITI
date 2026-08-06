@@ -941,27 +941,104 @@ async function boot(){
       }
     },800);
   };
-  $("#telbtn").onclick=async()=>{
-    $("#telbtn").disabled=true; $("#telmsg").textContent="Extracting…";
-    await fetch("api/telemetry_all",{method:"POST"});
+  // Backfill (E) and resync (F) share one job slot on the server (_tel_job) —
+  // starting either while the other runs is refused, so both buttons disable
+  // together and either row's poll loop recognises a job it didn't start.
+  function setTelButtonsBusy(busy){
+    $("#telbtn").disabled=busy; $("#resyncbtn").disabled=busy;
+  }
+  async function pollTelJob(expectMode,onDone){
     const poll=setInterval(async()=>{
       const s=await fetch("api/status").then(r=>r.json()).catch(()=>null);
-      if(s&&s.tel_job){
-        const j=s.tel_job;
-        $("#telbar").classList.toggle("on",!!j.running);
-        if(j.running){
-          $("#telmsg").textContent=`${j.done}/${j.total}…`;
-          renderBar($("#telbar"),{label:"🛰️ Extracting telemetry…",done:j.done,total:j.total});
-        } else {
-          clearInterval(poll);
-          $("#telmsg").textContent=j.total>0?`${j.done}/${j.total} done ✓`:"none new";
-          $("#telbar").innerHTML="";
-          $("#telbtn").disabled=false;
-          loadClips(true);
-        }
+      if(!s||!s.tel_job) return;
+      const j=s.tel_job;
+      const mine=j.mode===expectMode||(!j.running&&_lastTelMode===expectMode);
+      if(!mine && j.running) return;   // the other row's job is running; ignore
+      if(j.running){
+        _lastTelMode=j.mode;
+        setTelButtonsBusy(true);
+        onDone(j,true);
+      } else {
+        clearInterval(poll);
+        setTelButtonsBusy(false);
+        onDone(j,false);
       }
     },800);
+    return poll;
+  }
+  let _lastTelMode=null;
+
+  $("#telbtn").onclick=async()=>{
+    setTelButtonsBusy(true); $("#telmsg").textContent="Extracting…";
+    $("#telcancel").style.display="inline-block"; $("#telcancel").disabled=false;
+    _lastTelMode="backfill";
+    await fetch("api/telemetry_all",{method:"POST"});
+    pollTelJob("backfill",(j,running)=>{
+      $("#telbar").classList.toggle("on",running);
+      if(running){
+        $("#telmsg").textContent=`${j.done}/${j.total}…`;
+        renderBar($("#telbar"),{label:"🛰️ Extracting telemetry…",done:j.done,total:j.total,
+                               note:j.skipped?`${j.skipped} skipped (cancelling)`:""});
+      } else {
+        $("#telmsg").textContent=j.total>0
+          ? (j.cancelled?"Cancelled — ":"")+`${j.done-(j.skipped||0)}/${j.total} done`
+          : "none new";
+        $("#telbar").innerHTML=""; $("#telcancel").style.display="none";
+        loadClips(true);
+      }
+    });
   };
+  $("#telcancel").onclick=async()=>{
+    $("#telcancel").disabled=true; $("#telmsg").textContent="Cancelling…";
+    await fetch("api/telemetry_all/cancel",{method:"POST"}).catch(()=>{});
+  };
+
+  // "Fix telemetry sync": re-extract telemetry for clips whose cached JSON
+  // predates the 0.7.15 frame-timing fix. Only ever overwrites a
+  // telemetry.json sidecar — the clip, its encrypted original and the key
+  // store are untouched, so this needs no confirmation dialog.
+  async function refreshResync(){
+    const info=$("#resyncInfo"), btn=$("#resyncbtn");
+    if(!btn) return;
+    const p=await fetch("api/telemetry_resync/preview").then(r=>r.json()).catch(()=>null);
+    if(!p||!p.files){
+      $("#resyncmsg").textContent=p?"All telemetry is already on the current schema — nothing to fix.":"";
+      btn.style.display="none";
+      return;
+    }
+    $("#resyncmsg").textContent=`${p.files} clip(s) have telemetry from before this fix.`;
+    btn.style.display="inline-block";
+  }
+  $("#toolsbtn").addEventListener("click",()=>refreshResync().catch(()=>{}));
+  $("#resyncbtn").onclick=async()=>{
+    setTelButtonsBusy(true); $("#resyncmsg").textContent="Starting…";
+    $("#resynccancel").style.display="inline-block"; $("#resynccancel").disabled=false;
+    _lastTelMode="resync";
+    await fetch("api/telemetry_resync",{method:"POST"});
+    pollTelJob("resync",(j,running)=>{
+      $("#resyncbar").classList.toggle("on",running);
+      if(running){
+        const notes=[];
+        if(j.errors) notes.push(`${j.errors} error(s)`);
+        if(j.skipped) notes.push(`${j.skipped} skipped (cancelling)`);
+        $("#resyncmsg").textContent=`${j.done}/${j.total}…`;
+        renderBar($("#resyncbar"),{label:"🩹 Re-extracting telemetry…",done:j.done,total:j.total,
+                                  note:notes.join(" · ")});
+      } else {
+        $("#resyncbar").innerHTML=""; $("#resynccancel").style.display="none";
+        const ok=j.done-(j.errors||0)-(j.skipped||0);
+        $("#resyncmsg").textContent=j.total>0
+          ? (j.cancelled?"Cancelled — ":"")+`${ok}/${j.total} fixed`+(j.errors?` · ${j.errors} failed`:"")
+          : "nothing to do";
+        loadClips(true); refreshResync().catch(()=>{});
+      }
+    });
+  };
+  $("#resynccancel").onclick=async()=>{
+    $("#resynccancel").disabled=true; $("#resyncmsg").textContent="Cancelling…";
+    await fetch("api/telemetry_all/cancel",{method:"POST"}).catch(()=>{});
+  };
+
   $("#t_hud").onchange=applyHud;
   $("#t_nerd").onchange=()=>{ if(!$("#t_nerd").checked){ $("#nerd").style.display="none"; } else if(!(tele&&tele.frame_count)&&curEvent){ nerdEvent(); $("#nerd").style.display="block"; } };
   $("#t_map").onchange=()=>showMap($("#t_map").checked);

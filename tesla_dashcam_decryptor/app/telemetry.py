@@ -4,6 +4,17 @@ Field names taken verbatim from the Tesla source code.
 """
 import struct, hashlib
 
+# Bump when the frame-timing model changes. server.py uses this to find
+# already-decrypted clips whose cached telemetry.json predates a fix and
+# needs re-extraction — it is written as the first key of the returned dict
+# so a cheap partial read of the file is enough to check it, without parsing
+# the whole (often 200+ KB) JSON. History: 2 = frame_idx is the sample's true
+# position among H.264 VCL NALs (0.7.15 fix for telemetry lagging the video
+# by up to 18s when SEI coverage stops partway through a clip); 1 (implicit,
+# no marker) = frame_idx was the sample's ordinal among SEIs, which drifted
+# from true elapsed time whenever coverage wasn't 1:1 with every video frame.
+TELEMETRY_SCHEMA = 2
+
 GEAR = {0: "P", 1: "D", 2: "R", 3: "N"}
 
 
@@ -139,4 +150,6 @@ def extract_telemetry(data: bytes) -> dict:
     # lookup index to frame_count-1, so once real playback time runs past the
     # last telemetry sample it holds on the last known value instead of
     # indexing past the end of a shorter array.
-    return {"fps": round(fps, 3), "frame_count": len(frames), "frames": frames}
+    # "schema" first so a 64-byte partial read is enough to check it later.
+    return {"schema": TELEMETRY_SCHEMA, "fps": round(fps, 3),
+            "frame_count": len(frames), "frames": frames}

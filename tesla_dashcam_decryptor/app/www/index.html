@@ -17,9 +17,9 @@
      no-store, so changing it here is what forces browsers onto the new assets;
      0.7.2 shipped them with a long max-age and would otherwise keep serving
      the previous app.js from cache for a day after an update. -->
-<link rel="stylesheet" href="static/leaflet.css?v=0.7.15"/>
-<script src="static/leaflet.js?v=0.7.15" defer></script>
-<link rel="stylesheet" href="static/style.css?v=0.7.15">
+<link rel="stylesheet" href="static/leaflet.css?v=0.7.16"/>
+<script src="static/leaflet.js?v=0.7.16" defer></script>
+<link rel="stylesheet" href="static/style.css?v=0.7.16">
 </head>
 <body>
 <header>
@@ -166,8 +166,17 @@
     <div class="step">
       <h3>E · Backfill telemetry for unencrypted clips</h3>
       <p>Plain (unencrypted) clips only get their SEI telemetry (speed, gear, steering, …) extracted when opened in the viewer. Run this once to extract it for all existing plain clips that don't have it yet:</p>
-      <div class="row"><button class="btn" id="telbtn">🛰️ Extract all telemetry</button><span id="telmsg" style="color:var(--muted);font-size:12px"></span></div>
+      <div class="row"><button class="btn" id="telbtn">🛰️ Extract all telemetry</button><button class="btn ghost" id="telcancel" style="display:none">✕ Cancel</button><span id="telmsg" style="color:var(--muted);font-size:12px"></span></div>
       <div class="jobbar" id="telbar"></div>
+    </div>
+    <div class="step">
+      <h3>F · Fix telemetry sync</h3>
+      <p id="resyncInfo">A bug (fixed in 0.7.15) could make the telemetry HUD lag the video by up to 18 seconds
+         on clips where the car's telemetry stream stopped partway through recording — the HUD kept showing the
+         car still moving after it had visibly come to a stop. Existing clips keep their old, incorrectly-timed
+         data until re-extracted from the mp4 already on disk. Nothing is deleted and no clip is re-decrypted.</p>
+      <div class="row"><button class="btn ghost" id="resyncbtn" style="display:none">🩹 Fix telemetry sync</button><button class="btn ghost" id="resynccancel" style="display:none">✕ Cancel</button><span id="resyncmsg" style="color:var(--muted);font-size:12px"></span></div>
+      <div class="jobbar" id="resyncbar"></div>
     </div>
     <div class="step">
       <h3>D · Bookmarklet (fallback if API is blocked)</h3>
@@ -184,6 +193,6 @@
   </div>
 </div>
 
-<script src="static/app.js?v=0.7.15" defer></script>
+<script src="static/app.js?v=0.7.16" defer></script>
 </body>
 </html>
