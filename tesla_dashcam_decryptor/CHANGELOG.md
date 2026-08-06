@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.12
+- **"Fetching keys…" could sit there forever.** The message was only replaced when at least one key came back, so a fetch that returned none left the panel looking stuck although it had finished. Every outcome is now reported, including "0 new keys", together with how many are still missing
+- **Diagnosed why keys never arrive for some files: they contain no key to ask about.** A clip can be eCryptfs-encrypted and still have its wrapped-key section all zeros — and that section *is* the request sent to Tesla. Those files were silently dropped while building the request, so each fetch honestly reported success and the count never moved. On this library that is 273 files, confirmed by sampling headers across eight different dates
+- Such files now get their own state instead of being lumped in with "no key yet": a red lock badge explaining that the file contains no key and cannot be decrypted, and a separate `no_wrapped_key` counter alongside `need_keys`
+- They are remembered in a new `.nokey_cache.json`, so they are never re-read. Previously every fetch cycle read 8 KB from each of them off the NAS to reach the same conclusion
+
 ## 0.7.11
 - **Fix: the rectangle area selection on the map could not be drawn.** Marker icons and trip polylines are separate DOM elements sitting above the map and they swallow `mousedown`, so a drag that began on one never reached the map at all — and since 0.7.10 frames the view tightly on the events, almost every drag started on a marker. Markers and paths are now made click-through for the duration of the drag and the cursor turns into a crosshair
 - **Shift+drag** now selects an area without arming the button first, and the toolbar says so. The button was the only way in and nothing on the map suggested it had to be pressed

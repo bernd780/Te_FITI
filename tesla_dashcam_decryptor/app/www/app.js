@@ -76,7 +76,18 @@ async function refreshStatus(){
     const li=s.login||{};
     $("#lpill").className="pill "+(li.logged_in?"ok":"bad"); $("#lpill").textContent=li.logged_in?(li.has_refresh?"logged in ✓":"logged in"):"not logged in";
     $("#loginbox").style.display=li.logged_in?"none":"block";
-    let api=s.last_api||{}; if(api.ok===false) $("#lmsg").textContent="Direct API: "+api.msg; else if(api.ok&&api.got) $("#lmsg").textContent="Direct API: "+api.got+" new keys.";
+    // Report every outcome, including "0 new keys". Previously the message was
+    // only replaced when got>0, so a fetch that found nothing left the panel
+    // reading "Fetching keys…" indefinitely.
+    const api=s.last_api||{};
+    if(!s.busy&&api.ok!==null&&api.ok!==undefined){
+      const nk=s.no_wrapped_key||0;
+      $("#lmsg").textContent=(api.ok===false)
+        ? "Direct API: "+api.msg
+        : `Direct API: ${api.got||0} new key(s).`
+          +(s.need_keys?` ${s.need_keys} still missing.`:"")
+          +(nk?` ${nk} file(s) carry no key of their own and cannot be recovered.`:"");
+    }
     $("#tstat").textContent=`Clips ${s.clips} · encrypted ${s.encrypted} · with key ${s.keyed} · no key ${s.need_keys}`;
     const dn=$("#decDeleteNote");
     if(dn) dn.innerHTML=s.delete_originals
@@ -101,9 +112,11 @@ function clipState(c){ return c.has_locked&&!c.playable&&!c.needs_prepare ? "loc
 let _collapsed={};
 const _lockSvg=(color,title)=>`<svg title="${title}" width="12" height="14" viewBox="0 0 24 28" style="vertical-align:middle"><path d="M6 12V8a6 6 0 1 1 12 0v4h1a3 3 0 0 1 3 3v8a3 3 0 0 1-3 3H5a3 3 0 0 1-3-3v-8a3 3 0 0 1 3-3h1z" fill="${color}"/></svg>`;
 function _lockBadge(c){
+  if(c.has_nokey && !c.needs_prepare && !c.playable)
+    return _lockSvg("#f87171","encrypted, but the file contains no key — Tesla stored none, so it cannot be decrypted");
   if(!c.has_locked && !c.needs_prepare) return "";
   if(c.needs_prepare) return _lockSvg("#34d399","encrypted – key available");
-  return _lockSvg("#9aa7b4","encrypted – no key");
+  return _lockSvg("#9aa7b4","encrypted – no key yet");
 }
 function _clipRow(c){
   const r=document.createElement("div"); r.className="cliprow"+(c.id===activeId?" active":"")+(c.is_trigger?" trigger":""); r.dataset.id=c.id;

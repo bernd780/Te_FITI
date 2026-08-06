@@ -89,7 +89,7 @@ def _read_head(path):
         return path, None
 
 
-def items_for(files: list) -> list:
+def items_for(files: list) -> dict:
     """Wrapped-key items for an explicit list of (abspath, id) pairs.
 
     Preferred over scan_items(): the caller already knows which files are
@@ -97,24 +97,35 @@ def items_for(files: list) -> list:
     cannot possibly yield a key. scan_items() instead treats every media file
     missing from the key store as a candidate — which includes every *plain*
     clip, since those are never in it — and reads an 8 KB header from each.
+
+    Returns {"items", "no_wrapped_key", "unreadable"}. The caller needs to tell
+    those apart: a file whose wrapped-key section is absent can never produce a
+    key, because that section *is* the request sent to Tesla. Silently dropping
+    it looked exactly like "the fetch found nothing", which is why a library
+    could sit at 273 missing keys with every fetch reporting success.
     """
     paths = [p for p, _ in files]
     ids = [i for _, i in files]
-    items = []
+    out = {"items": [], "no_wrapped_key": [], "unreadable": []}
     if not paths:
-        return items
+        return out
     with ThreadPoolExecutor(max_workers=SCAN_WORKERS) as ex:
         # ex.map preserves input order, so ids stay aligned with the results
         for cid, (_path, head) in zip(ids, ex.map(_read_head, paths)):
-            if not head or not is_ecryptfs(head):
+            if not head:
+                out["unreadable"].append(cid)
+                continue
+            if not is_ecryptfs(head):
+                out["no_wrapped_key"].append(cid)
                 continue
             try:
                 wk = parse_wrapped_key(head)
             except Exception:
+                out["no_wrapped_key"].append(cid)
                 continue
             wk["id"] = cid
-            items.append(wk)
-    return items
+            out["items"].append(wk)
+    return out
 
 
 def scan_items(src_dir: str, keys: dict, limit: int = 0) -> list:

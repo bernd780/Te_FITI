@@ -112,12 +112,14 @@ _meta_cache = {}     # clip id  -> telemetry/event metadata (has_tel, gps, reaso
 _enc_cache = {}      # scanrel  -> bool, file carries an eCryptfs header
 _track_cache = {}    # clip id  -> decimated GPS track for the trip map
 _size_cache = {}     # scanrel  -> file size in bytes (analytics storage stats)
+_nokey_cache = {}    # scanrel  -> True, encrypted but carries no wrapped key
 _CACHE_FILES = {}    # name -> (dict, path)
 
 def _cache_init(data_dir):
     """Bind each cache dict to its JSON file and load what is already there."""
     for name, d in (("meta", _meta_cache), ("enc", _enc_cache),
-                    ("track", _track_cache), ("size", _size_cache)):
+                    ("track", _track_cache), ("size", _size_cache),
+                    ("nokey", _nokey_cache)):
         path = os.path.join(data_dir, f".{name}_cache.json")
         _CACHE_FILES[name] = (d, path)
         if os.path.isfile(path):
@@ -305,6 +307,10 @@ def _cam_state(sr, keys, out_files=None, src_files=None):
         return {"state": "ready", "url": "media/" + sr}
     if sr in keys or enc_id(sr) in keys:
         return {"state": "key", "url": None}
+    if sr in _nokey_cache or enc_id(sr) in _nokey_cache:
+        # Encrypted, but the file carries no wrapped key, so there is nothing
+        # to ask Tesla for. Distinct from "locked" (a key can still arrive).
+        return {"state": "nokey", "url": None}
     return {"state": "locked", "url": None}
 
 def _haversine_km(lat1, lon1, lat2, lon2):
@@ -398,6 +404,7 @@ def _finalize(c, out_files=None, src_files=None, ev_cache=None):
     sts = [cm["state"] for cm in c["cameras"].values()]
     c["needs_prepare"] = "key" in sts
     c["has_locked"] = "locked" in sts
+    c["has_nokey"] = "nokey" in sts
     c["playable"] = any(s in ("plain", "ready") for s in sts)
     cid = c["id"]
     cached = _meta_cache.get(cid)
@@ -662,11 +669,14 @@ def counts(clips):
     cams = [cm for c in clips for cm in c["cameras"].values()]
     return {
         "clips": len(clips),
-        "encrypted": sum(1 for cm in cams if cm["state"] in ("ready", "key", "locked")),
+        "encrypted": sum(1 for cm in cams if cm["state"] in ("ready", "key", "locked", "nokey")),
         "plain": sum(1 for cm in cams if cm["state"] == "plain"),
         "decrypted": sum(1 for cm in cams if cm["state"] == "ready"),
         "keyed": sum(1 for cm in cams if cm["state"] in ("ready", "key")),
         "need_keys": sum(1 for cm in cams if cm["state"] == "locked"),
+        # Encrypted with no wrapped key in the file: unrecoverable, and counted
+        # apart so they stop looking like keys that are merely still missing.
+        "no_wrapped_key": sum(1 for cm in cams if cm["state"] == "nokey"),
         "need_decrypt": sum(1 for cm in cams if cm["state"] == "key"),
         "with_telemetry": sum(1 for c in clips if c.get("has_tel")),
         "with_data": sum(1 for c in clips if c.get("has_data")),
@@ -1252,15 +1262,33 @@ def pending_key_items():
     8 KB header from every media file missing from the key store — which is
     every plain clip too, since those are never in it. On a library with 8,596
     plain files that was ~8,900 SMB reads to find 273, repeated every cycle.
+
+    Files already known to carry no wrapped key are skipped outright: nothing
+    about them can change, so re-reading 8 KB from each on every cycle is pure
+    waste.
     """
     files = []
     for c in clips_cached():
         for cam, info in c["cameras"].items():
-            if info["state"] == "locked":
-                sr = _sr_of_cam(c["folder"], c["timestamp"], cam)
-                files.append((src_abspath(sr), enc_id(sr)))
-    _dbg(f"pending_key_items: {len(files)} locked files (no full-tree scan)")
-    return keybridge.items_for(files)
+            if info["state"] != "locked":
+                continue
+            sr = _sr_of_cam(c["folder"], c["timestamp"], cam)
+            if sr in _nokey_cache:
+                continue
+            files.append((src_abspath(sr), enc_id(sr)))
+    res = keybridge.items_for(files)
+    if res["no_wrapped_key"]:
+        # Remember them so the UI can say "cannot be recovered" rather than
+        # "no key yet", and so they are never read again.
+        for cid in res["no_wrapped_key"]:
+            _nokey_cache[cid] = True
+        _cache_save("nokey")
+        print(f"[fetch] {len(res['no_wrapped_key'])} file(s) carry no wrapped key "
+              f"(Tesla stored none) — these can never be decrypted", flush=True)
+    _dbg(f"pending_key_items: {len(files)} candidates -> {len(res['items'])} items, "
+         f"{len(res['no_wrapped_key'])} without a wrapped key, "
+         f"{len(res['unreadable'])} unreadable")
+    return res["items"]
 
 
 def api_fetch(items):
