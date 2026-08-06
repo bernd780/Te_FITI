@@ -831,7 +831,60 @@ async function boot(){
       +`Removing them frees that space; the decrypted copy stays and remains playable.`;
     btn.style.display="inline-block";
   }
-  $("#toolsbtn").addEventListener("click",()=>refreshCleanup().catch(()=>{}));
+  // Undecryptable files: moved rather than deleted, so the decision is
+  // reversible — you can always drag the folder back.
+  async function refreshQuarantine(){
+    const info=$("#quarantineInfo"), btn=$("#quarantinebtn");
+    if(!info||!btn) return;
+    const p=await fetch("api/quarantine/preview").then(r=>r.json()).catch(()=>null);
+    if(!p){ info.textContent=""; btn.style.display="none"; return; }
+    if(!p.enabled){
+      info.innerHTML="Set <code>broken_subpath</code> in the add-on options to enable this.";
+      btn.style.display="none"; return;
+    }
+    if(!p.files){
+      info.textContent="No undecryptable clips — nothing to move.";
+      btn.style.display="none"; return;
+    }
+    const size=p.bytes_estimate?` (${p.exact?"":"about "}${fmtBytes(p.bytes_estimate)})`:"";
+    info.innerHTML=`<b>${p.files}</b> file(s)${size} are encrypted but contain no key of their own, `
+      +`so nothing can ever decrypt them. Moving them to <code>${p.target}</code> takes them out of `
+      +`the clip list and keeps their folder structure — nothing is deleted, you can move them back.`;
+    btn.style.display="inline-block";
+  }
+  $("#quarantinebtn").onclick=async()=>{
+    const p=await fetch("api/quarantine/preview").then(r=>r.json()).catch(()=>null);
+    if(!p||!p.files){ $("#quarantinemsg").textContent="Nothing to move."; return; }
+    if(!confirm(`Move ${p.files} undecryptable file(s) to:\n${p.target}\n\n`
+      +`They leave the clip list but are not deleted — the folder structure is kept, `
+      +`so you can move them back at any time.\n\nContinue?`)) return;
+    $("#quarantinebtn").disabled=true; $("#quarantinemsg").textContent="Starting…";
+    $("#deccancel").style.display="inline-block"; $("#deccancel").disabled=false;
+    await fetch("api/quarantine",{method:"POST"});
+    const poll=setInterval(async()=>{
+      const st=await fetch("api/status").then(r=>r.json()).catch(()=>null);
+      if(st&&st.dec_job){
+        const j=st.dec_job;
+        $("#decbar").classList.toggle("on",!!j.running);
+        if(j.running){
+          $("#quarantinemsg").textContent=`${j.done}/${j.total}…`;
+          renderBar($("#decbar"),{label:"📦 Moving undecryptable files…",done:j.done,total:j.total,
+                                 note:j.errors?`${j.errors} skipped`:""});
+        } else {
+          clearInterval(poll);
+          $("#decbar").innerHTML="";
+          const ok=j.done-j.errors-(j.skipped||0);
+          $("#quarantinemsg").textContent=(j.cancelled?"Cancelled — ":"")
+            +`${ok} moved`+(j.errors?` · ${j.errors} skipped`:"");
+          $("#quarantinebtn").disabled=false; $("#deccancel").style.display="none";
+          refreshStatus(); loadClips(true); refreshQuarantine().catch(()=>{});
+        }
+      }
+    },1000);
+  };
+  $("#toolsbtn").addEventListener("click",()=>{
+    refreshCleanup().catch(()=>{}); refreshQuarantine().catch(()=>{});
+  });
   $("#cleanupbtn").onclick=async()=>{
     const p=await fetch("api/cleanup/preview").then(r=>r.json()).catch(()=>null);
     if(!p||!p.files){ $("#cleanupmsg").textContent="Nothing to clean up."; return; }

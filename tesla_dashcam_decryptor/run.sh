@@ -9,6 +9,8 @@ ENC=""
 if bashio::config.has_value 'enc_subpath'; then ENC=$(bashio::config 'enc_subpath'); fi
 DEC="decrypted"
 if bashio::config.has_value 'dec_subpath'; then DEC=$(bashio::config 'dec_subpath'); fi
+BROKEN="broken"
+if bashio::config.has_value 'broken_subpath'; then BROKEN=$(bashio::config 'broken_subpath'); fi
 INTERVAL=$(bashio::config 'interval_seconds')
 DELETE=$(bashio::config 'delete_originals')
 AUTO=$(bashio::config 'auto_decrypt')
@@ -50,6 +52,8 @@ else
 fi
 OUT="${MNT}/${DEC}"
 mkdir -p "${OUT}"
+# Sits next to the clip tree, not inside it, so moved files are not re-indexed.
+BROKENDIR="${MNT}/${BROKEN}"
 bashio::log.info "Scan  : ${SCAN}"
 bashio::log.info "Source: ${SRC} (encrypted files auto-detected by header)"
 bashio::log.info "Target: ${OUT}   Keys: ${SRC}/.teslacam_keys.json"
@@ -64,4 +68,4 @@ FLAGS=""
 
 trap 'umount "${MNT}" 2>/dev/null || true' EXIT INT TERM
 
-exec python3 /app/server.py --src "${SRC}" --out "${OUT}" --scan "${SCAN}" --port 8099 --interval "${INTERVAL}" ${FLAGS}
+exec python3 /app/server.py --src "${SRC}" --out "${OUT}" --scan "${SCAN}" --broken "${BROKENDIR}" --port 8099 --interval "${INTERVAL}" ${FLAGS}

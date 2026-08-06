@@ -44,6 +44,7 @@ import tesla_api
 WWW = os.path.join(os.path.dirname(os.path.abspath(__file__)), "www")
 DATA_DIR = os.environ.get("DATA_DIR", os.path.dirname(os.path.abspath(__file__)))
 SRC_DIR = OUT_DIR = SCAN_DIR = "."   # SRC=enc root, OUT=cache, SCAN=full clip tree
+BROKEN_DIR = ""                      # where undecryptable files are moved to
 ENC_PREFIX = "EncryptedClips"         # SRC_DIR relative to SCAN_DIR
 KEYS_FILE = ""
 INTERVAL = 300
@@ -996,6 +997,86 @@ def prepare_clip(cid):
     invalidate(cid)
     return {"ok": not errs, "errors": errs, "clip": _scan_one(cid, keys)}
 
+def broken_candidates():
+    """Encrypted files that carry no wrapped key — nothing can ever decrypt
+    them. Taken from the index, so listing them costs no NAS access."""
+    out = []
+    for c in clips_cached():
+        for cam, info in c["cameras"].items():
+            if info["state"] == "nokey":
+                out.append(_sr_of_cam(c["folder"], c["timestamp"], cam))
+    return out
+
+
+def quarantine_preview():
+    """What a move would affect, and where it would go."""
+    srs = broken_candidates()
+    known = [_size_cache[sr] for sr in srs if sr in _size_cache]
+    est = sum(known)
+    if known and len(known) < len(srs):
+        est = int(est / len(known) * len(srs))
+    return {"files": len(srs), "bytes_estimate": est,
+            "exact": bool(srs) and len(known) == len(srs),
+            "target": BROKEN_DIR, "enabled": bool(BROKEN_DIR)}
+
+
+def quarantine_broken():
+    """Move the undecryptable files out of the clip tree, keeping their folder
+    structure so they stay identifiable — and reversible, which is why this
+    moves rather than deletes."""
+    global _dec_job
+    if not BROKEN_DIR:
+        return {"error": "no target folder configured"}
+    if _dec_job.get("running"):
+        return {"skipped": "busy"}
+    srs = broken_candidates()
+    _dec_cancel.clear()
+    _dec_job = {"running": True, "done": 0, "total": len(srs), "errors": 0,
+                "deleting": False, "cancelled": False, "skipped": 0,
+                "phase": "quarantine", "freed": 0}
+    moved = size = 0
+    try:
+        for sr in srs:
+            if _dec_cancel.is_set():
+                with _dec_guard:
+                    _dec_job["skipped"] += 1
+                    _dec_job["done"] += 1
+                continue
+            src = src_abspath(sr)
+            dst = os.path.normpath(os.path.join(BROKEN_DIR, sr))
+            try:
+                if not os.path.isfile(src):
+                    raise OSError("source is gone")
+                if os.path.exists(dst):
+                    raise OSError("already in the target folder")
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                size += os.path.getsize(src)
+                # Same SMB mount, so this is a rename: instant, and no risk of
+                # a half-copied file.
+                os.replace(src, dst)
+                _enc_cache.pop(sr, None)
+                _nokey_cache.pop(sr, None)
+                _size_cache.pop(sr, None)
+                moved += 1
+            except OSError as e:
+                print(f"[quarantine] {sr}: {e}", flush=True)
+                with _dec_guard:
+                    _dec_job["errors"] += 1
+            with _dec_guard:
+                _dec_job["done"] += 1
+                _dec_job["freed"] = size
+        print(f"[quarantine] moved {moved}/{len(srs)} undecryptable files to {BROKEN_DIR}, "
+              f"{_dec_job['errors']} errors, cancelled={_dec_cancel.is_set()}", flush=True)
+    finally:
+        _cache_save("enc", "nokey", "size")
+        _dec_job["cancelled"] = _dec_cancel.is_set()
+        _dec_job["running"] = False
+        _dec_cancel.clear()
+        invalidate()
+    return {"moved": moved, "bytes": size, "errors": _dec_job["errors"],
+            "target": BROKEN_DIR}
+
+
 def cleanup_candidates():
     """Encrypted originals whose clip is already decrypted — the leftovers from
     every decrypt that ran while delete_originals was broken (it never deleted
@@ -1492,6 +1573,8 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, data)
         if path == "/api/cleanup/preview":
             return self._send(200, cleanup_preview())
+        if path == "/api/quarantine/preview":
+            return self._send(200, quarantine_preview())
         if path == "/api/trips":
             return self._send(200, trips_cached())
         if path == "/api/analytics":
@@ -1575,6 +1658,12 @@ class H(BaseHTTPRequestHandler):
         if path == "/api/decrypt/cancel":
             _dec_cancel.set()
             return self._send(200, {"ok": True, "cancelling": _dec_job.get("running", False)})
+        if path == "/api/quarantine":
+            if not BROKEN_DIR:
+                return self._send(400, {"ok": False,
+                                        "error": "broken_subpath is not set in the add-on options"})
+            bg(quarantine_broken)
+            return self._send(200, {"ok": True})
         if path == "/api/cleanup":
             if not DELETE:
                 return self._send(400, {"ok": False,
@@ -1607,6 +1696,7 @@ if __name__ == "__main__":
     p.add_argument("--src", default=".")
     p.add_argument("--out", default=".")
     p.add_argument("--scan", default="")
+    p.add_argument("--broken", default="", help="folder to move undecryptable clips into")
     p.add_argument("--keys", default="")
     p.add_argument("--port", type=int, default=8099)
     p.add_argument("--interval", type=int, default=300)
@@ -1622,6 +1712,14 @@ if __name__ == "__main__":
     ENC_PREFIX = os.path.relpath(SRC_DIR, SCAN_DIR).replace("\\", "/")
     if ENC_PREFIX in (".", ""):
         ENC_PREFIX = ""
+    if a.broken:
+        BROKEN_DIR = os.path.abspath(a.broken)
+        # Must sit outside the scanned tree, or the moved files are simply
+        # indexed again from their new location and nothing was gained.
+        if BROKEN_DIR == SCAN_DIR or BROKEN_DIR.startswith(SCAN_DIR + os.sep):
+            print(f"[config] broken_subpath '{a.broken}' is inside the scanned tree "
+                  f"({SCAN_DIR}) — disabled, pick a folder next to it instead", flush=True)
+            BROKEN_DIR = ""
     KEYS_FILE = a.keys or keystore.default_path(SRC_DIR)
     INTERVAL = a.interval
     DELETE = a.delete
@@ -1637,6 +1735,6 @@ if __name__ == "__main__":
     _rescan_async()
     threading.Thread(target=scheduler, daemon=True).start()
     print(f"Viewer :{a.port} scan={SCAN_DIR} enc={SRC_DIR} (prefix='{ENC_PREFIX}') "
-          f"out={OUT_DIR} keys={KEYS_FILE} auto_decrypt={AUTO_DECRYPT} "
+          f"out={OUT_DIR} broken={BROKEN_DIR or '-'} keys={KEYS_FILE} auto_decrypt={AUTO_DECRYPT} "
           f"embed={EMBED_KEY} direct_api={DIRECT_API} debug={DEBUG}", flush=True)
     ThreadingHTTPServer(("0.0.0.0", a.port), H).serve_forever()

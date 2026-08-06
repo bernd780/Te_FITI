@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.14
+- New **"Move undecryptable clips aside"** button: files that are encrypted but carry no wrapped key are moved to a separate folder on the NAS, out of the clip list. They are **moved, not deleted** — the folder structure is preserved, so the decision can be undone by moving the folder back
+- New `broken_subpath` option (default `broken`), a folder next to the clip tree. It is rejected if it points inside the scanned tree, since the files would simply be indexed again from their new location
+- The move is a rename on the same SMB mount: instant, and with no chance of a half-copied file. Only the affected `.mp4` files are moved — `event.json`, thumbnails and the still-recoverable clips in the same folder stay where they are
+- Shares the progress bar and cancel button with the other bulk jobs, and only one of them can run at a time
+
 ## 0.7.13
 - Follow-up to 0.7.12, both found by watching the fix run on a real library: a fetch that has nothing to request now records that outcome, instead of leaving the panel on "Fetching keys…" — exactly the case a library full of key-less files hits every time
 - Marking files as key-less now refreshes the clip list, so the red badges and the `no_wrapped_key` counter appear immediately rather than after the next scan

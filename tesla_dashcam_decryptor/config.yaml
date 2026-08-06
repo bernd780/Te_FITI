@@ -1,5 +1,5 @@
 name: Te_FITI
-version: "0.7.13"
+version: "0.7.14"
 slug: te_fiti
 description: >-
   Multi-camera Tesla dashcam viewer for Home Assistant with telemetry HUD,
@@ -23,6 +23,7 @@ options:
   smb_host: "192.168.1.100"
   smb_share: "Tesla_Video"
   clips_subpath: "TeslaCam"
+  broken_subpath: "broken"
   smb_username: ""
   smb_password: ""
   smb_domain: ""
@@ -39,6 +40,7 @@ schema:
   clips_subpath: str
   enc_subpath: str?
   dec_subpath: str?
+  broken_subpath: str?
   smb_username: str?
   smb_password: password?
   smb_domain: str?

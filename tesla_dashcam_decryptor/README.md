@@ -135,6 +135,7 @@ does not, these options do nothing.
 | `delete_originals` | `false` | **Deletes the encrypted originals** after a clip decrypts successfully. Frees space, but there is no undo — the decrypted copy in `dec_subpath` becomes your only copy. The key itself is kept either way. An original is only removed once the decrypt succeeded *and* the decrypted file exists and is non-empty. Applies both to the background decryption and to the "Decrypt everything" button. |
 | `key_after_decrypt` | `hidden` | `hidden` keeps keys in the key store only. `embed` also writes the key into an ignored `uuid` box inside the decrypted MP4, so the file stays decryptable on its own — convenient, but anyone with the file then has its key. |
 | `dec_subpath` | `decrypted` | Folder inside the share for decrypted clips, thumbnails and extracted telemetry. |
+| `broken_subpath` | `broken` | Folder inside the share for clips that are encrypted but contain no key of their own, moved there by the "Move undecryptable clips aside" button. Must sit outside `clips_subpath`. Nothing is deleted — moving the folder back restores them. |
 | `enc_subpath` | *(empty)* | Legacy. Encrypted files are detected by their eCryptfs header wherever they are, so leave this empty unless you deliberately keep them in a separate folder. |
 
 ### Behaviour and diagnostics
