@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.15
+- **Fix: telemetry could lag the video by up to 18 seconds, so the HUD kept showing the car moving well after it had visibly stopped on screen.** Tesla does not embed a telemetry SEI in every video frame — once the car stops, SEIs can simply stop while the video keeps recording for a while longer. The extractor derived fps as (SEI count)/(video duration) and used each SEI's own ordinal for its timestamp, which implicitly assumes one SEI per frame with no gaps. On a real clip only 1511 of 2154 frames carried an SEI (coverage stopped dead at 70% through the clip), which understated fps as ~25.3 instead of the true ~36 and stretched those samples across the full nominal duration — the HUD ended up showing telemetry recorded 9+ seconds earlier by the middle of the clip and 18s earlier by the point telemetry actually stopped
+- Every SEI is now tagged with its true position among the video's own H.264 frames (not its position among *other SEIs*), and fps is computed from the true total frame count. Verified against the exact reported case (2026-07-29_18-37-29, front camera): at video time 31s the HUD now reads ~0 km/h, matching the visibly stopped car, where it previously read ~10 km/h carried over from true time 21.7s
+- Once real telemetry ends, the HUD now freezes on the last known reading instead of continuing to interpolate stretched values across the rest of the clip
+- **Only affects newly extracted telemetry.** Clips already decrypted have their (incorrectly timed) `telemetry.json` cached and are not corrected retroactively — regenerating requires re-decrypting, which "Decrypt everything" only does for clips it hasn't decrypted yet. A bulk "re-extract telemetry for already-decrypted clips" tool was not built pending confirmation it's wanted
+
 ## 0.7.14
 - New **"Move undecryptable clips aside"** button: files that are encrypted but carry no wrapped key are moved to a separate folder on the NAS, out of the clip list. They are **moved, not deleted** — the folder structure is preserved, so the decision can be undone by moving the folder back
 - New `broken_subpath` option (default `broken`), a folder next to the clip tree. It is rejected if it points inside the scanned tree, since the files would simply be indexed again from their new location

@@ -43,7 +43,10 @@ def _pb(d):
     return f
 
 
-def _fps(b, n):
+def _fps(b, frame_count):
+    """Video's true fps: frame_count / mvhd duration. frame_count must be the
+    number of actual video (VCL) frames, not the number of telemetry SEIs —
+    those can be sparser than the video itself (see extract_telemetry)."""
     p = 0; mp = ms = 0
     while p + 8 <= len(b):
         sz = _be32(b, p); t = b[p+4:p+8]
@@ -57,11 +60,29 @@ def _fps(b, n):
         ts = _be32(b, mv+8); dur = struct.unpack(">Q", b[mv+24:mv+32])[0]
     else:
         ts = _be32(b, mv+16); dur = _be32(b, mv+20)
-    return (n / (dur/ts)) if (ts and dur) else 36.0
+    return (frame_count / (dur/ts)) if (ts and dur) else 36.0
 
 
 def extract_telemetry(data: bytes) -> dict:
-    """data = decrypted MP4 (bytes). Returns {fps, frame_count, frames:[...]}"""
+    """data = decrypted MP4 (bytes). Returns {fps, frame_count, frames:[...]}
+
+    Tesla does not embed a telemetry SEI in every coded video frame — once the
+    car stops (park, computer going to sleep, ...) the SEIs simply stop while
+    the video keeps recording for a while longer. On a real clip only ~70% of
+    the 2154 video frames carried an SEI, all of them contiguous from frame 0.
+
+    Each SEI is therefore tagged with vcl_idx: its position among H.264 VCL
+    NALs (type 1 = non-IDR slice, type 5 = IDR slice), i.e. its true position
+    in the video's own frame timeline — not its position among *other SEIs*.
+    Using the SEI's own ordinal for "t" (as this used to) implicitly assumes
+    one SEI per video frame with no gaps; averaging (SEI count)/(video
+    duration) into a synthetic fps then stretches whatever SEIs exist across
+    the full duration. On the clip above that understated the true ~36 fps as
+    ~25.3, so every timestamp ran fast relative to the video and grew a lag of
+    9+ seconds by the middle of the clip and 18s by the point telemetry
+    actually stopped — the HUD showed the car still rolling at 8-10 km/h while
+    the frame on screen showed it already stopped.
+    """
     p = mds = mde = 0
     while p + 8 <= len(data):
         sz = _be32(data, p); t = data[p+4:p+8]
@@ -69,12 +90,14 @@ def extract_telemetry(data: bytes) -> dict:
         if sz < 8: break
         p += sz
     raw = []
+    vcl_idx = -1
     pos = mds
     while pos + 4 <= mde:
         ln = _be32(data, pos)
         if ln <= 0 or pos+4+ln > mde: break
         nal = data[pos+4:pos+4+ln]
-        if nal and (nal[0] & 0x1f) == 6:
+        nal_type = (nal[0] & 0x1f) if nal else -1
+        if nal_type == 6:
             r = _rm_ep(nal[1:]); j = 0
             while j < len(r):
                 if r[j] == 0x80 and all(x == 0 for x in r[j+1:]): break
@@ -87,14 +110,19 @@ def extract_telemetry(data: bytes) -> dict:
                 ps += r[j]; j += 1; pl = r[j:j+ps]; j += ps
                 if pt == 5:
                     k = pl.find(b'\x08\x01')
-                    if k >= 0: raw.append(_pb(pl[k:]))
+                    if k >= 0:
+                        # This SEI precedes the next VCL NAL in decode order,
+                        # so it belongs to that (not-yet-seen) frame index.
+                        raw.append((vcl_idx + 1, _pb(pl[k:])))
+        elif nal_type in (1, 5):
+            vcl_idx += 1
         pos += 4 + ln
-    n = len(raw)
-    fps = _fps(data, n) if n else 36.0
+    total_frames = vcl_idx + 1
+    fps = _fps(data, total_frames) if total_frames else 36.0
     frames = []
-    for i, f in enumerate(raw):
+    for frame_idx, f in raw:
         frames.append({
-            "t": round(i / fps, 3),
+            "t": round(frame_idx / fps, 3),
             "speed_kmh": round(f.get(4, 0.0) * 3.6, 1),
             "gear": GEAR.get(f.get(2), str(f.get(2))),
             "accel": round(f[5], 1) if 5 in f else None,
@@ -107,4 +135,8 @@ def extract_telemetry(data: bytes) -> dict:
             "lon": round(f[12], 6) if 12 in f else None,
             "heading": round(f[13], 1) if 13 in f else None,
         })
-    return {"fps": round(fps, 3), "frame_count": n, "frames": frames}
+    # frame_count is len(frames), not total_frames: the frontend clamps its
+    # lookup index to frame_count-1, so once real playback time runs past the
+    # last telemetry sample it holds on the last known value instead of
+    # indexing past the end of a shorter array.
+    return {"fps": round(fps, 3), "frame_count": len(frames), "frames": frames}
